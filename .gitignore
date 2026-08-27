@@ -1,0 +1,60 @@
+# Build artifacts (object files live in per-variant subdirs)
+build/**/*.o
+build/**/*.d
+build/**/*.map
+build/*.o
+build/*.d
+build/*.map
+
+# Standalone test/selftest binaries (built into build/ by `make tests`,
+# `make ssl-selftest`)
+build/test_device_id
+build/test_pbuf
+build/test_bep
+build/test_disco
+build/test_syncmodel
+build/test_foldstate
+build/test_foldsync
+build/test_index_store
+build/test_ignore
+build/test_config
+build/test_pathsafe
+build/test_converge
+build/fuzz_all
+build/fuzz_config
+build/asan_*
+build/ssl_selftest_040
+build/ssl_selftest_060
+build/ssl_bench_040
+build/ssl_bench_060
+
+# Compiled binaries / release outputs
+dist/amisync.info
+dist/amisync_020
+dist/amisync_040
+dist/amisync_060
+dist/amisync_040.debug
+dist/amisync_060.debug
+dist/amisync-genid
+dist/*.lha
+
+# Assembled install drawer (built by `make package`)
+dist/Amisync/
+dist/Amisync.info
+
+# Editor / OS cruft
+*.swp
+*~
+.DS_Store
+*.orig
+
+# Local notes not meant for the repo
+NOTES.local.md
+
+# Internal development notes - kept locally, not published
+docs/
+
+# Local audit dumps and session config - not published
+reviews/
+.claude/
+tools/emutest/

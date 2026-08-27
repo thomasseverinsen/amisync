@@ -1,0 +1,46 @@
+Short:        Syncthing-compatible file sync daemon
+Author:       Thomas Severinsen
+Uploader:     amiga at mossfoundry dot com
+Type:         comm/net
+Version:      0.9.3
+Architecture: m68k-amigaos >= 3.0.0
+Requires:     68020+, AmiSSL 5.x, a TCP/IP stack (Roadshow/AmiTCP/Miami)
+License:      MIT
+Distribution: Aminet
+
+AmiSync keeps a folder on your Amiga in sync with your other computers
+using Syncthing, an open-source continuous file synchronisation protocol.
+Save, change or delete a file on one machine and the same thing happens on
+the others, over an encrypted connection, with no cloud account in the
+middle.
+
+AmiSync speaks Syncthing's native Block Exchange Protocol over TLS 1.3 (via
+AmiSSL), so it interoperates with current Syncthing (v2.x) on Windows,
+macOS, Linux, phones and NAS boxes.
+
+Features:
+
+  - Send-receive, send-only and receive-only folders, with the connection
+    pinned to the configured device ID
+  - Persistent per-folder index: a restart re-uses stored hashes instead of
+    re-reading every file
+  - Near-instant pickup of local changes (filesystem notification), plus a
+    periodic scan as a backstop
+  - .stignore patterns, Syncthing-style conflict copies, and rename/copy
+    detection
+  - Optional file versioning: a file a remote change would overwrite or
+    delete is first moved to a .stversions drawer (a "trash can" safety net)
+  - Local peer discovery and runtime peer adding, from the Workbench or via
+    ARexx
+  - Workbench integration: a status AppIcon on the backdrop and the daemon's
+    commands in the Tools menu
+  - Scriptable through an ARexx port; AmigaGuide manual included
+
+Not supported: global discovery and relays (peers must be directly
+reachable - same LAN or a dialable address), symlinks, and
+receive-encrypted/untrusted peers.
+
+AmiSync is an independent project, not affiliated with or endorsed by Syncthing.
+
+Installation: unpack, then double-click Install (or run "Installer Install"
+from a Shell). See the included amisync.guide for full documentation.

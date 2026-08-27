@@ -1,0 +1,417 @@
+@database "amisync.guide"
+@$VER: amisync.guide 0.9.3 (26.08.2026)
+@author "Thomas Severinsen"
+@(c) "2026 Thomas Severinsen, MIT licensed"
+@wordwrap
+@smartwrap
+
+@node Main "AmiSync 0.9.3"
+
+@{b}AmiSync@{ub} - a Syncthing-compatible file synchronization daemon for
+AmigaOS 3.x (68020 and up)
+
+  @{" Introduction    " link Intro}   what AmiSync and Syncthing are
+  @{" Requirements    " link Require} what you need to run it
+  @{" Installing      " link Install} unpacking and the Installer
+  @{" Setting up      " link Setup}   pairing with your other devices
+  @{" Running         " link Running} starting and stopping the daemon
+  @{" Workbench       " link Workbench} the AppIcon and Tools menu
+  @{" ARexx           " link ARexx}   scripting the daemon
+  @{" Configuration   " link Config}  every S:amisync.conf option
+  @{" Versioning      " link Version} the .stversions safety net
+  @{" Troubleshooting " link Trouble} when something is not right
+  @{" Credits         " link Credits} authors and licenses
+
+AmiSync is an independent project, not affiliated with or endorsed by
+Syncthing.
+
+@endnode
+
+@node Intro "Introduction"
+@toc Main
+@{b}What is Syncthing?@{ub}
+
+Syncthing is a popular open-source program that keeps folders in sync
+between two or more computers: save, change or delete a file on one
+machine and the same thing happens on the others, over an encrypted
+connection, with no cloud account in the middle. It runs on Windows,
+macOS, Linux and phones.
+
+@{b}What is AmiSync?@{ub}
+
+AmiSync brings this to the classic Amiga. It speaks Syncthing's native
+protocol (the Block Exchange Protocol over TLS 1.3, via AmiSSL), so the
+Amiga appears as just another device in your Syncthing setup, and a
+folder on the Amiga stays mirrored with a folder on any of your other
+machines.
+
+@{b}What works@{ub}
+
+Files sync both ways with current Syncthing (v2.x): connections dialled
+out or accepted inbound, deletions, directories, .stignore patterns,
+per-block SHA-256 verification, conflict copies, rename/copy detection,
+local discovery, and a persistent index that survives restarts.
+
+@{b}Limits@{ub}
+
+A folder tree nests at most 12 levels deep; entries deeper than that are
+skipped. There is no fixed cap on the number of entries - the per-folder
+index grows as needed, so folder size is bounded by RAM (every synced
+file keeps an index record and its block hashes in memory).
+
+@{b}What is not supported@{ub}
+
+Global discovery and relays (peers must be directly reachable - the same
+LAN or a dialable address), symlinks, and receive-encrypted/untrusted
+peers.
+
+@endnode
+
+@node Require "Requirements"
+@toc Main
+To run AmiSync you need:
+
+  o  AmigaOS 3.x on a 68020 or better. No FPU is needed (the crypto is
+     all integer maths); on slower CPUs the same maths makes TLS
+     handshakes take a while, so expect patience below a 68040.
+
+  o  @{b}AmiSSL@{ub} 5.x installed (it provides TLS). Get it from
+     https://github.com/jens-maus/amissl
+
+  o  A running @{b}TCP/IP stack@{ub} providing bsdsocket.library -
+     Roadshow, AmiTCP or Miami.
+
+A few MB of free RAM is plenty for a normal folder.
+
+@endnode
+
+@node Install "Installing"
+@toc Main
+Download the latest amisync-<version>.lha, extract it on the Amiga, then
+either double-click @{b}Install@{ub} or run it from a Shell in the
+extracted drawer:
+
+   Installer Install
+
+The installer picks the build for your CPU (68020/68030, 68040 or
+68060), copies @{b}amisync@{ub} and @{b}amisync-genid@{ub} into your
+command path (default C:), installs the Workbench icon, seeds
+@{b}S:amisync.conf@{ub} (leaving any existing one untouched), creates
+this device's identity if AmiSSL is installed and none exists yet, and
+can add AmiSync to S:User-Startup so it starts at every boot.
+
+Once installed, continue with @{" Setting up " link Setup}.
+
+@endnode
+
+@node Setup "Setting up a sync"
+@toc Main
+@{b}1. Show the Amiga's device ID@{ub}:
+
+   amisync-genid SHOWID
+
+On your other machine, add the Amiga as a device in Syncthing - on the
+same LAN it appears in the "Add Remote Device" suggestions, otherwise
+type the ID - and share a folder with it.
+
+@{b}2. Tell AmiSync which folder to sync@{ub}, in S:amisync.conf:
+
+   ; folder id (must match the id in Syncthing), local path, mode:
+   folder = amisync Work:Sync sendreceive
+
+@{b}3. Start AmiSync@{ub} (see @{" Running " link Running}) - or reboot,
+if the installer added it to User-Startup.
+
+@{b}4. Add the other device as a peer.@{ub} On the same LAN this is a
+click: it is discovered within moments and appears in the status
+window's Remote Devices list with a "Discovered" badge - select it and
+press @{b}Add...@{ub} (or use the ARexx @{"ADDPEER" link ARexx}
+command). AmiSync only ever connects to peers you add - nothing is
+accepted automatically.
+
+No shared LAN, or prefer it explicit? Put the peer in S:amisync.conf
+yourself:
+
+   peer = P56IOI7-...-XZWICQ2 192.168.1.50:22000
+
+Either way the device ID pins the TLS connection - a peer presenting any
+other certificate is rejected. See @{" Configuration " link Config} for
+every option.
+
+@{b}Every folder is offered to every peer.@{ub} Unlike Syncthing, AmiSync
+has no per-device folder sharing: a device you add can request any file in
+any configured folder. Add only devices you would give all of those
+folders to, and keep anything you would not on a separate machine.
+
+@endnode
+
+@node Running "Running"
+@toc Main
+Start AmiSync from a Shell:
+
+   amisync            starts and detaches into the background
+   amisync NODETACH   stays in the foreground (handy for debugging)
+
+Stop it with Ctrl-C (foreground), from the Workbench Tools menu, or from
+a Shell:
+
+   rx "address AMISYNC QUIT"
+
+If the installer added it to S:User-Startup, it starts automatically at
+every boot.
+
+@endnode
+
+@node Workbench "Workbench"
+@toc Main
+While running, AmiSync shows an @{b}AppIcon@{ub} on the Workbench
+backdrop whose label is the live sync status ("Up to Date", "Syncing (3
+files)", "Offline"). Double-click it for a status window with the full
+report, updated live every couple of seconds; double-clicking again brings
+the open window to the front.
+
+The status window shows a @{b}This Device@{ub} panel, then
+@{b}Folders@{ub} and @{b}Remote Devices@{ub} as lists sorted by name,
+each with a live @{b}State@{ub} column ("Up to Date", "Syncing (3
+files)", "Scanning"). @{b}Click a row@{ub} to select it and unfold its
+details beneath; click it again to collapse. The buttons under each
+list act on the selected row and ghost when they do not apply.
+
+Under Folders: @{b}Add...@{ub} (choose or create a drawer in the
+requester, then name the folder in the small dialog - the name is its
+label, the drawer's name its id), @{b}Open@{ub} (opens the drawer on
+Workbench), @{b}Rescan@{ub} (just that folder), @{b}Accept...@{ub}
+(configures a folder a peer offers - such rows carry an "Offered"
+badge; pick the local drawer and syncing starts) and @{b}Remove...@{ub}
+(stops syncing it - no files are deleted, here or on peers). Under
+Remote Devices: @{b}Add...@{ub} (a device seen on the LAN - rows
+badged "Discovered"), @{b}Pause@{ub}/@{b}Resume@{ub} (that device
+only) and @{b}Remove...@{ub}. Anything destructive asks first.
+
+Along the bottom: @{b}Rescan All@{ub}, @{b}Pause All@{ub}/@{b}Resume
+All@{ub}, @{b}Open Log@{ub} (views the log in MultiView) and
+@{b}Stop...@{ub} (stops the daemon, after asking - the window's close
+gadget just closes the window). The window also carries menus
+on the right mouse button: @{b}Project@{ub} (Open Log Amiga+L,
+About..., Close Window, Stop AmiSync... Amiga+Q) and @{b}Sync@{ub}
+(Rescan All Amiga+R, Pause All Amiga+P, Resume All Amiga+U). The lists scroll
+when they overflow; resize the window freely with the size gadget -
+once you do, it keeps your size.
+
+Its commands also appear in Workbench's @{b}Tools menu@{ub} (an "AmiSync"
+sub-menu on OS 3.9/3.2, flat entries on older systems):
+
+  o  @{b}Status...@{ub}    open the status window
+  o  @{b}Rescan All@{ub}   re-scan the folders now
+  o  @{b}Pause All@{ub}    stop dialling peers
+  o  @{b}Resume All@{ub}   resume dialling peers
+  o  @{b}Stop...@{ub}      stop the daemon (asks first)
+
+The one-line status is also exported to @{b}ENV:amisync/status@{ub}.
+
+When AmiSync starts from User-Startup the icon and menu appear a couple
+of seconds after the desktop loads. Set @{b}appicon = no@{ub} in the
+config to turn all of this off. To re-skin the icon, replace
+ENVARC:Amisync/appicon.info.
+
+@endnode
+
+@node ARexx "ARexx control"
+@toc Main
+AmiSync publishes an ARexx port named @{b}AMISYNC@{ub}. From an ARexx
+script (set OPTIONS RESULTS to read a returned string):
+
+@{b}STATUS@{ub}
+   Returns a sectioned report: this device (uptime, traffic totals),
+   folders (files, size, last scan) and remote devices (state, identity,
+   traffic).
+
+@{b}DISCOVERED@{ub}
+   Lists unconfigured devices seen on the LAN. AmiSync never connects to
+   them on its own.
+
+@{b}ADDPEER <id> [host[:port]]@{ub}
+   Add a device as a sync peer at runtime and append a peer line to
+   S:amisync.conf. Given a host it is dialled right away; given the ID
+   alone it waits to be found by local discovery.
+
+@{b}ADDFOLDER <id> <path> [sendreceive|sendonly|receiveonly]@{ub}
+   Add a folder at runtime and append its line to S:amisync.conf. The
+   drawer is created if needed, scanned, then offered to every
+   configured peer. (The status window's Add... button is the same
+   thing with a requester; use ADDFOLDER for a custom id.)
+
+@{b}REMOVEFOLDER <id>@{ub}
+   Stop syncing folder <id> and remove its config line. Local files
+   stay on disk and peers keep their copies.
+
+@{b}RESCAN@{ub}
+   Re-scan all folders now (normally automatic: within seconds of a
+   change, plus a periodic scan).
+
+@{b}PAUSE [id]@{ub} / @{b}RESUME [id]@{ub}
+   Stop or resume dialling all peers, or just one. The id must be the
+   peer's FULL device ID - the 7-character prefix STATUS shows will not
+   match, and the command still reports success.
+
+@{b}LOGLEVEL [debug|info|warn|error]@{ub}
+   Set the log verbosity, or return the current level with no argument.
+
+@{b}VERSION@{ub}   Return the version string.
+@{b}HELP@{ub}      Return the command list.
+@{b}QUIT@{ub}      Stop the daemon cleanly.
+
+Example:
+
+   options results
+   address AMISYNC 'STATUS'
+   say result
+
+@endnode
+
+@node Config "Configuration"
+@toc Main
+Settings live in @{b}S:amisync.conf@{ub}, one "key = value" per line.
+A ';' or '#' begins a comment line (there are no inline comments).
+See the installed amisync.conf.example for a fully annotated template.
+
+@{b}General@{ub}
+   logfile   = T:amisync.log     where the log is written
+   logmax    = 256               log size cap in KB (0 = no cap)
+   loglevel  = info              debug | info | warn | error
+   seriallog = no                tee the log to the serial port
+   appicon   = yes               show the Workbench AppIcon and menu
+   rexxport  = AMISYNC           ARexx port name
+
+@{b}Identity@{ub}
+   certfile   = ENVARC:Amisync/cert.pem
+   keyfile    = ENVARC:Amisync/key.pem
+   devicename = amisync           the name peers see (sample: amiga4000)
+   statedir   = ENVARC:Amisync/state
+   keepdeletes = 180             days to keep deletion records
+
+@{b}Networking@{ub}
+   listenport = 22000            inbound BEP port (0 = dial only)
+   discovery  = yes              local discovery on UDP 21027
+
+@{b}Safety@{ub}
+   versioning = no               keep replaced/deleted files
+                                 (see @{" Versioning " link Version})
+
+@{b}Clock@{ub}
+   tzoffset   = +02:00           how far AHEAD of UTC this clock is
+                                 set (east positive). An Amiga clock
+                                 holds local time and the protocol
+                                 speaks UTC, so without this the file
+                                 dates you exchange are an offset out.
+                                 Taken from Locale prefs by default;
+                                 set it here only if Locale is unset
+                                 or does not match this clock. '+00:00'
+                                 means the clock really keeps UTC.
+                                 No daylight-saving rule (Locale has
+                                 none either), so a fixed offset is an
+                                 hour out for half the year. Changing
+                                 it is safe once syncing: files a peer
+                                 sent are re-stamped, yours are
+                                 announced once with the right time.
+
+@{b}Peers@{ub} (one line each; up to 16)
+   peer = <device-id> [<host>[:<port>]]
+
+@{b}Folders@{ub} (up to 8)
+   folder = <id> <path> [sendreceive|sendonly|receiveonly] [label]
+
+Double-quote a path or label that contains spaces, e.g.
+@{b}folder = photos "Ram Disk:Photos" sendreceive@{ub}.
+
+The folder id must match the id in Syncthing; the path is the local
+AmigaOS directory. A .stignore file in the folder root is honoured
+(Syncthing-style patterns).
+
+@{b}receiveonly is a mirror.@{ub} Files you create in such a folder stay
+there - AmiSync never announces them and never removes them. Files that
+arrived from the peer belong to the peer: if you edit one, the peer's
+copy replaces your edit at the next scan, because this mode has no way
+to send a change back and so no way to reconcile one.
+
+Your edit is not lost. The copy being replaced is moved to the folder's
+.stversions drawer first - whether or not versioning is switched on -
+and the log names the file. Copy it back out if you wanted it. Use
+sendreceive for a folder you intend to edit in.
+
+@endnode
+
+@node Version "File versioning"
+@toc Main
+By default, when a remote change deletes or overwrites a file, the old
+copy on the Amiga is gone. Turn on @{b}versioning@{ub} to keep a safety
+net:
+
+   versioning = yes
+
+With it on, a file a remote change is about to overwrite or delete is
+first moved into a @{b}.stversions@{ub} drawer at the folder root,
+keeping only its most recent old copy (Syncthing's "trash can" mode).
+
+This protects you from a mistaken delete or edit made on another device.
+To restore a file, copy it back out of .stversions. The drawer is never
+synced to peers.
+
+Concurrent edits (both sides change the same file at once) are handled
+separately: the losing copy is kept as a *.sync-conflict-* file whether
+or not versioning is on.
+
+@endnode
+
+@node Trouble "Troubleshooting"
+@toc Main
+@{b}It says "Offline" and never connects.@{ub}
+Check that AmiSSL and a TCP/IP stack are installed and running, that the
+peer's device ID and address in S:amisync.conf are correct, and that the
+peer's Syncthing has accepted this device and shared the folder. The log
+(T:amisync.log by default) usually says why.
+
+@{b}"peer is X, expected Y".@{ub}
+The certificate at that address did not match the configured device ID.
+Confirm you have the right ID and that nothing else is answering on that
+host and port.
+
+@{b}"cannot bind UDP 21027".@{ub}
+Something else holds the discovery port (e.g. another Syncthing on the
+same machine, under emulation). Discovery send still works; only receive
+is affected.
+
+@{b}A file will not sync.@{ub}
+Very long names can exceed what FFS stores (30 characters per component);
+use PFS3 or SFS for such folders. A folder also nests at most 12 levels
+deep - entries deeper than that are skipped. Check the log too for a
+"too large" or "unsafe name" note.
+
+@{b}More detail.@{ub}
+Set @{b}loglevel = debug@{ub} (or send the ARexx LOGLEVEL debug command)
+and watch T:amisync.log.
+
+@endnode
+
+@node Credits "Credits"
+@toc Main
+AmiSync was written by Thomas Severinsen, with Claude (Anthropic).
+
+@{b}Third-party content@{ub}
+
+  o  @{b}LZ4@{ub} compression, (c) 2011-2023 Yann Collet, BSD 2-Clause.
+
+  o  The @{b}AmiSync icon@{ub} is derived from the official Syncthing
+     logo (MPL-2.0). Syncthing is a trademark of the Syncthing
+     Foundation; AmiSync is an independent project, not affiliated with
+     or endorsed by Syncthing.
+
+  o  TLS is provided at runtime by @{b}AmiSSL@{ub}, the Amiga port of
+     OpenSSL.
+
+@{b}License@{ub}
+
+AmiSync is MIT licensed. See the LICENSE file. The third-party content
+above keeps its own licenses.
+
+@endnode

@@ -1,0 +1,150 @@
+; amisync.conf - example configuration for AmiSync
+; Copy to S:amisync.conf and edit to taste.
+;
+; INI-style: "key = value", blank lines ignored. A ';' or '#' starts a comment
+; only at the BEGINNING of a line - there are no trailing/inline comments, so
+; anything after the '=' is part of the value.
+
+; ---------------------------------------------------------------------------
+; Global settings
+; ---------------------------------------------------------------------------
+
+; Where the daemon writes its log. Default: T:amisync.log
+logfile  = T:amisync.log
+
+; Cap the log file's size in KB: when it would grow past this, it is
+; truncated and starts over with a marker line (T: usually lives in RAM:,
+; so an uncapped log slowly eats memory). 0 = never truncate. Default: 256
+logmax   = 256
+
+; Verbosity: debug | info | warn | error  (or 0..3). Default: info
+loglevel = info
+
+; Tee every log line to the serial debug port as well as the log file
+; (yes | no, default: no). Handy under emulation: set WinUAE's serial port to
+; capture and you get live logs on the host. Costs a little on real hardware,
+; so leave it off there.
+seriallog = no
+
+; Show a status AppIcon on the Workbench backdrop (yes | no, default: yes).
+; Its label is the live sync status ("Up to Date", "Syncing (3 files)", ...);
+; double-click it for the full STATUS report. Also adds the daemon's commands
+; to Workbench's Tools menu (Status, Rescan, Pause All, Resume All, Add
+; Discovered and Quit). When AmiSync starts before LoadWB (User-Startup) both
+; appear a couple of seconds after the desktop loads. The status is in ENV:amisync/status regardless.
+appicon = yes
+
+; Name of the ARexx control port. Default: AMISYNC
+; (Send commands with e.g.  rx "address AMISYNC QUIT")
+rexxport = AMISYNC
+
+; ---------------------------------------------------------------------------
+; Identity (created once with amisync-genid)
+; ---------------------------------------------------------------------------
+
+; Our TLS certificate and private key. Defaults point at what amisync-genid
+; writes, so you normally don't need to set these.
+certfile   = ENVARC:Amisync/cert.pem
+keyfile    = ENVARC:Amisync/key.pem
+
+; The device name other peers see in the Hello handshake. Default: amisync
+devicename = amiga4000
+
+; Where the per-folder index is persisted. Must be writable, survive
+; reboots, and NOT live inside a synced folder. Default: ENVARC:Amisync/state
+statedir   = ENVARC:Amisync/state
+
+; How long (days) to keep deletion records (tombstones) before pruning them on
+; save. Longer is safer against resurrecting files from long-dormant peers.
+; Default: 180
+keepdeletes = 180
+
+; File versioning (yes | no, default: no). When on, a file that a remote change
+; is about to overwrite or delete is first moved into a .stversions drawer at
+; the folder root (keeping only its most recent old copy - Syncthing's "trash
+; can" mode). A safety net against a mistaken delete or edit on another device;
+; the .stversions drawer is never synced. Restore by copying a file back out.
+versioning = no
+
+; How far ahead of UTC this machine's clock is set ([+-]HH:MM, east positive -
+; the same sign your phone shows: +01:00 for CET, +02:00 for CEST, -05:00 for
+; EST). An Amiga clock holds LOCAL time while the sync protocol speaks UTC, so
+; without this every file you send carries a time an offset away from the real
+; one, and every file you receive is stamped an offset away from what the
+; sender meant. Syncing still works either way - the error is symmetric - but
+; the dates you see are wrong on one side or the other.
+;
+; There is no daylight-saving rule: change this when your clocks change, the
+; same way Locale prefs works. Changing it re-dates every file, so the next
+; scan re-reads and re-announces the whole folder once.
+;
+; By DEFAULT this is taken from Locale prefs (Time Zone), where the machine
+; already says what zone it keeps - you only need a line here if Locale is
+; unset, or set to a zone this machine's clock does not actually keep. Setting
+; it explicitly always wins, including '+00:00' for a clock that really does
+; keep UTC. 'locale' asks Locale prefs in so many words.
+;
+; Changing it is safe on a folder that is already syncing: the index remembers
+; which offset it was written under, and files a peer sent are re-stamped from
+; it on the next start rather than looking modified. Files YOU made are
+; announced once with their corrected time, which is the point of the change.
+;
+; There is no daylight-saving rule (Locale prefs has none either), so a fixed
+; offset is an hour out for half the year - change it when your clocks change,
+; or set it here rather than in Locale.
+;tzoffset = +02:00
+;tzoffset = locale
+;tzoffset = +00:00
+
+; ---------------------------------------------------------------------------
+; Networking
+; ---------------------------------------------------------------------------
+
+; TCP port we advertise / will listen on for BEP. Default: 22000
+listenport = 22000
+
+; Local discovery on UDP 21027 (yes | no, default: yes - matching Syncthing).
+; The daemon announces itself (so LAN peers can find us; skipped when
+; listenport = 0, as there is nothing to dial) and listens for peers'
+; announcements - a configured peer found this way is dialled at its
+; discovered address, so you may list a peer by device ID alone (no
+; host:port). Only configured peers are ever dialled (no auto-accept):
+; unconfigured devices seen on the LAN are just listed (ARexx DISCOVERED)
+; and can be added as peers via the Workbench Tools menu
+; ("Add Discovered...") or ARexx ADDPEER, which appends a peer line below.
+discovery  = yes
+
+; ---------------------------------------------------------------------------
+; Peers - one line per trusted device we sync with. Format:
+;   peer = <device-id> [<host>[:<port>]]
+; The device-id is the 56/63-char Syncthing ID (dashes optional); it is pinned
+; against the peer's certificate after the TLS handshake. Give a host:port to
+; dial directly (port defaults to 22000), or omit it to find the peer by local
+; discovery (requires discovery = yes). Up to 16 peers.
+; ---------------------------------------------------------------------------
+
+; peer = P56IOI7-MZJNU2Y-IQGDREY-DM2MGTI-MGL3BXN-PQ6W5BM-TBBZ4TJ-XZWICQ2 192.168.1.50:22000
+
+; A peer given by device ID alone is found by local discovery. Note there is
+; nothing after the ID - a trailing comment would be read as the host name:
+; peer = AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH
+
+; ---------------------------------------------------------------------------
+; Folders to share. Format:
+;   folder = <id> <path> [sendreceive|sendonly|receiveonly] [label]
+;
+; receiveonly is a MIRROR. Files you create in it stay local and are never
+; announced; files that came from the peer are the peer's, so if you edit one
+; the peer's copy replaces your edit at the next scan - this mode cannot send
+; a change back, so it cannot reconcile one. The replaced copy is moved to
+; .stversions first (whatever 'versioning' below is set to) and the log names
+; it. Use sendreceive for a folder you intend to edit.
+; Double-quote a path or label containing spaces:
+;   folder = photos "Ram Disk:My Photos" sendreceive "My Photos"
+; The id must match the folder id on the peer. The path is the local AmigaOS
+; directory; mode defaults to sendreceive. A .stignore in the folder root is
+; honoured (Syncthing-style patterns).
+; ---------------------------------------------------------------------------
+
+; folder = documents Work:Documents sendreceive
+; folder = photos    Work:Photos    sendonly

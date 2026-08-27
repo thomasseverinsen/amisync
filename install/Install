@@ -1,0 +1,213 @@
+; Install - Commodore Installer script for amisync
+; Copyright (c) 2026 Thomas Severinsen, MIT licensed, see LICENSE
+;
+; Run by double-clicking the Install icon, or from a Shell:
+;     Installer Install
+;
+; It picks the 68020/68030, 68040 or 68060 build for this machine, copies
+; amisync and amisync-genid (default to C:), installs the Workbench AppIcon
+; image and the AmigaGuide manual, creates ENVARC:Amisync, seeds S:amisync.conf
+; (without clobbering an existing one), creates this device's identity if
+; AmiSSL is present, and can add amisync to S:User-Startup to run at boot.
+
+(set @app-name "amisync")
+
+(welcome "This installs AmiSync, a Syncthing-compatible file sync daemon "
+         "for AmigaOS 3.x (68020 and up).")
+
+; ---------------------------------------------------------------------------
+; Pick the binary for this CPU.
+; ---------------------------------------------------------------------------
+(set #cpu (database "cpu"))
+(set #variant
+    (if (= #cpu "68060")
+        "060"
+        (if (= #cpu "68040")
+            "040"
+            (if (OR (= #cpu "68030") (= #cpu "68020"))
+                "020"
+                ; 68000/68010: no supported build (AmiSSL itself needs a 68020+).
+                (abort "AmiSync requires a 68020 or better CPU (AmiSSL "
+                       "does too). This system reports a " #cpu ".")))))
+
+(message "Installing the " #variant " build for your " #cpu ".")
+
+; ---------------------------------------------------------------------------
+; AmiSSL is required for networking and for creating the identity.
+; ---------------------------------------------------------------------------
+(set #have-amissl (exists "LIBS:amisslmaster.library" (noreq)))
+(if (= #have-amissl 0)
+    (message "AmiSSL was not found (LIBS:amisslmaster.library).\n\n"
+             "AmiSync needs two things to reach peers:\n"
+             "  - AmiSSL 5.x (for TLS), and\n"
+             "  - a running TCP/IP stack (Roadshow, AmiTCP or Miami).\n\n"
+             "Install proceeds, but the installer will skip creating this "
+             "device's identity; once AmiSSL is installed, run  amisync-genid  "
+             "yourself to create it.")
+    (message "AmiSync also needs a running TCP/IP stack (Roadshow, AmiTCP or "
+             "Miami) to reach peers. Make sure one is installed"))
+
+; ---------------------------------------------------------------------------
+; Where to put the programs.
+; ---------------------------------------------------------------------------
+(set #bindir
+    (askdir
+        (prompt "Where should the AmiSync programs be installed?\n"
+                "(C: is on your search path and is the usual choice.)")
+        (help @askdir-help)
+        (default "C:")))
+(set @default-dest #bindir)
+
+(complete 10)
+
+; ---------------------------------------------------------------------------
+; Copy the daemon (renaming off its CPU suffix) and the identity tool.
+; ---------------------------------------------------------------------------
+(copyfiles
+    (prompt "Installing the AmiSync daemon")
+    (help @copyfiles-help)
+    (source (cat "amisync." #variant))
+    (dest #bindir)
+    (newname "amisync"))
+
+; One CPU-neutral 68020 build here: genid's real work (keygen, cert signing,
+; SHA-256) happens inside amissl.library, so a per-CPU build would gain nothing.
+(copyfiles
+    (prompt "Installing amisync-genid")
+    (help @copyfiles-help)
+    (source "amisync-genid")
+    (dest #bindir))
+
+; Ensure both programs are runnable. A host-built LhA archive carries no Amiga
+; protection bits, so set the executable (+e) and the usual file flags here
+; rather than relying on what the archive preserved.
+(protect (tackon #bindir "amisync")        "+rwed")
+(protect (tackon #bindir "amisync-genid")  "+rwed")
+
+(complete 40)
+
+; ---------------------------------------------------------------------------
+; Identity directory (amisync-genid writes cert.pem + key.pem here; the daemon
+; reads them from here).
+; ---------------------------------------------------------------------------
+(makedir "ENVARC:Amisync"
+    (prompt "Creating ENVARC:Amisync for this device's identity.")
+    (help @makedir-help))
+
+; The Workbench AppIcon's imagery (256-colour Syncthing logo on OS 3.2/3.5+,
+; classic 4-colour on older systems). Optional: without it the daemon shows
+; the system's default tool icon instead.
+(copyfiles
+    (prompt "Installing the Workbench AppIcon imagery")
+    (help @copyfiles-help)
+    (source "appicon.info")
+    (dest "ENVARC:Amisync")
+    (optional "nofail"))
+
+(complete 55)
+
+; ---------------------------------------------------------------------------
+; Configuration: keep the example for reference, and seed S:amisync.conf only
+; if the user does not already have one.
+; ---------------------------------------------------------------------------
+(copyfiles
+    (prompt "Installing the example configuration")
+    (help @copyfiles-help)
+    (source "amisync.conf.example")
+    (dest "S:"))
+
+(if (= (exists "S:amisync.conf" (noreq)) 0)
+    (
+        (copyfiles
+            (prompt "Creating S:amisync.conf")
+            (help @copyfiles-help)
+            (source "amisync.conf.example")
+            (dest "S:")
+            (newname "amisync.conf"))
+    )
+    (message "You already have S:amisync.conf - it was left unchanged. "
+             "See S:amisync.conf.example for any new options."))
+
+(complete 70)
+
+; ---------------------------------------------------------------------------
+; Create this device's identity (once), if AmiSSL is present and there is no
+; identity yet. amisync-genid prints the device ID; we also remind how to show
+; it again.
+; ---------------------------------------------------------------------------
+(set #made-id 0)
+(if (= #have-amissl 1)
+    (if (= (exists "ENVARC:Amisync/cert.pem" (noreq)) 0)
+        (
+            (message "Creating this device's identity (Ed25519 certificate). "
+                     "Its device ID will be printed - give that ID to your "
+                     "peers so they can authorize this Amiga.")
+            (run (tackon #bindir "amisync-genid"))
+            (set #made-id 1)
+        )
+        (message "An identity already exists in ENVARC:Amisync - keeping it.")))
+
+(complete 80)
+
+; ---------------------------------------------------------------------------
+; Optionally start amisync at every boot via S:User-Startup. We never touch
+; Startup-Sequence (reserved for the OS); the Installer's (startup) command
+; maintains an idempotent ;BEGIN/;END block in User-Startup, so reinstalling
+; updates it rather than adding a duplicate.
+;
+; The line uses "Run >NIL:" rather than launching amisync bare: that hands it
+; its own CLI and sends console output to NIL:, decoupling it from the boot
+; shell. Launching it bare from the boot script can crash during the busy boot
+; (the foreground copy's stdio racing the boot console); "Run >NIL:" is
+; reliable. amisync still self-detaches afterwards for its large stack, and if
+; the TCP/IP stack is not up yet it just warns and picks it up on the next dial.
+; ---------------------------------------------------------------------------
+(set #autostart
+    (askbool
+        (prompt "Start AmiSync automatically each time this Amiga boots?\n\n"
+                "This adds a line to S:User-Startup. Make sure your TCP/IP "
+                "stack (Roadshow, AmiTCP or Miami) starts at boot too.")
+        (help @startup-help)
+        (default 1)))
+(if #autostart
+    (startup @app-name
+        (prompt "Adding AmiSync to S:User-Startup.")
+        (help @startup-help)
+        (command (cat "Run >NIL: " (tackon #bindir "amisync")))))
+
+(complete 90)
+
+; ---------------------------------------------------------------------------
+; Documentation.
+; ---------------------------------------------------------------------------
+(copyfiles
+    (prompt "Copying the documentation")
+    (help @copyfiles-help)
+    (source "README")
+    (dest #bindir)
+    (optional "nofail"))
+
+(copyfiles
+    (prompt "Copying the AmigaGuide manual")
+    (help @copyfiles-help)
+    (source "amisync.guide")
+    (dest #bindir)
+    (optional "nofail"))
+
+(complete 100)
+
+; ---------------------------------------------------------------------------
+; Done.
+; ---------------------------------------------------------------------------
+; Keep this SHORT: the Installer's final message box does not scroll, and it
+; centers every line individually - so one sentence per line (no numbered
+; steps whose wrapped continuations would center raggedly), and details like
+; the AppIcon/Tools menu stay in the guide.
+(exit
+    "AmiSync is installed.\n\n"
+    "Edit S:amisync.conf to set your device name, peers and folders.\n"
+    "Show this device's ID with:  amisync-genid SHOWID\n"
+    (if #autostart
+        "AmiSync will start automatically at the next boot.\n"
+        "Then start the daemon by typing:  amisync\n")
+    "\nFull documentation: amisync.guide and README, installed alongside.\n")
