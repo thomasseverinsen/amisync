@@ -4,7 +4,7 @@ Uploader:     amiga at mossfoundry dot com
 Type:         comm/net
 Version:      0.9.3
 Architecture: m68k-amigaos >= 3.0.0
-Requires:     68020+, AmiSSL 5.x, a TCP/IP stack (Roadshow/AmiTCP/Miami)
+Requires:     68020+, AmiSSL 5.x, bsdsocket TCP/IP stack, about 4MB RAM
 License:      MIT
 Distribution: Aminet
 
@@ -17,6 +17,10 @@ middle.
 AmiSync speaks Syncthing's native Block Exchange Protocol over TLS 1.3 (via
 AmiSSL), so it interoperates with current Syncthing (v2.x) on Windows,
 macOS, Linux, phones and NAS boxes.
+
+Needs a TCP/IP stack providing bsdsocket.library - Roadshow, AmiTCP or
+Miami. About 4 MB of RAM is the working minimum for one folder and a peer
+or two; folder size is bounded by RAM rather than by a fixed limit.
 
 Features:
 
@@ -37,10 +41,17 @@ Features:
   - Scriptable through an ARexx port; AmigaGuide manual included
 
 Not supported: global discovery and relays (peers must be directly
-reachable - same LAN or a dialable address), symlinks, and
-receive-encrypted/untrusted peers.
+reachable - same LAN or a dialable address), symlinks,
+receive-encrypted/untrusted peers, and per-device folder sharing - every
+configured folder is offered to every configured peer, so add only devices
+you would give all of those folders to. Folder trees nest at most 12
+levels deep.
 
-AmiSync is an independent project, not affiliated with or endorsed by Syncthing.
+AmiSync is an independent project, not affiliated with or endorsed by
+Syncthing.
 
-Installation: unpack, then double-click Install (or run "Installer Install"
-from a Shell). See the included amisync.guide for full documentation.
+Installation: unpack, then double-click Install. From a Shell, "Installer
+Install" does the same. See the included amisync.guide for the full manual.
+
+Source, issues and newer releases:
+https://github.com/thomasseverinsen/amisync
