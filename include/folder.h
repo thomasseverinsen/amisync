@@ -85,7 +85,11 @@ typedef int (*FolderWalkFn)(void *ctx, const FolderEntry *e);
  * once per kept entry. Nothing is materialised, so there is no entry cap.
  * Returns 1 when the walk ran to completion, 0 when 'cb' aborted it (a partial
  * walk: entries not reached look "missing", so the caller must NOT reconcile
- * deletions from it), or -1 if the folder cannot be opened. */
+ * deletions from it), or -1 if the folder cannot be opened.
+ *
+ * A directory at FOLDER_MAX_DEPTH is reported like any other but not descended
+ * into, so everything below it is absent from the walk and the index. The walk
+ * still returns 1; folder_walk logs one warning per root naming an example. */
 int folder_walk(const char *path, const IgnoreSet *ig, FolderWalkFn cb,
                 void *ctx);
 
@@ -105,6 +109,14 @@ int folder_load_ignores(const char *path, IgnoreSet *set);
 
 /* Delete <path>/<name>. Returns 1 on success, 0 on failure. */
 int folder_delete(const char *path, const char *name);
+
+/* Whether <path>/<name> is a path AmigaDOS can carry (see AMIGA_PATH_MAX in
+ * folder.c). Lets a caller tell "we cannot name this object" from "the
+ * operation failed", which want opposite answers. A 0 does NOT mean the object
+ * is absent: one made through a short relative path can sit at an absolute path
+ * too long to name, and folder_walk still finds it, its relative name fitting
+ * BEP_PATH_MAX. Returns 1/0. */
+int folder_path_addressable(const char *path, const char *name);
 
 /* Rename <path>/<from> to <path>/<to> (same volume by construction). Used to
  * preserve a conflict loser before its slot is re-downloaded. Returns 1/0. */

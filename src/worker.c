@@ -786,6 +786,15 @@ static int32_t dl_block_span(const Sync *S, int block, int64_t *off)
  * counts it (see num_stalled in Sync). */
 static void stall_add(Sync *S, int fidx, const char *name)
 {
+    int i;
+
+    /* A peer re-offers what we could not take on every connection. Counting a
+     * name twice would inflate the backlog and crowd out real entries. */
+    for (i = 0; i < S->num_stalled; i++)
+        if (S->stalled_fidx[i] == fidx &&
+            strcmp(S->stalled_name[i], name) == 0)
+            return;
+
     if (S->num_stalled >= WK_MAX_STALLED) {
         log_printf(LOG_WARN, "worker: more than %d unfetchable file(s); '%s' "
                    "is left out of the reported backlog", WK_MAX_STALLED, name);
@@ -1004,7 +1013,20 @@ static void apply_peer_dir(Sync *S, int fidx, const BepFileInfo *fi)
         }
     }
 
-    folder_mkdir(f->path, fi->name);           /* I/O: outside the lock */
+    if (!folder_mkdir(f->path, fi->name)) {    /* I/O: outside the lock */
+        /* A path AmigaDOS will not carry. Recording it would claim a drawer we
+         * cannot reach and report "Up to Date" over a subtree that never
+         * arrived, so count it stalled instead.
+         *
+         * It may be on disk already - see folder_path_addressable - and
+         * dropping it from the index would be worse than the stall:
+         * mark-and-sweep would read the gap as a local deletion and send the
+         * peer a tombstone for data it holds and we merely cannot reach. */
+        log_printf(LOG_WARN, "worker: cannot use drawer '%s' - path too long "
+                   "for AmigaOS; shorten the name", fi->name);
+        stall_add(S, fidx, fi->name);
+        return;
+    }
     foldstate_lock(fs);
     {
         FolderRec *h = foldstate_find(fs, fi->name);
@@ -1102,12 +1124,23 @@ static int apply_peer_dir_delete(Sync *S, int fidx, const BepFileInfo *fi)
      * Leave our live record; the peer re-offers the deletion and we retry
      * once its contents are gone. */
     if (!folder_delete(f->path, fi->name)) {
-        log_printf(LOG_DEBUG, "worker: directory '%s' not empty yet; will retry",
+        /* The opposite call to apply_peer_dir's. With no record and no way to
+         * name the path there is nothing here to remove - folder_walk would
+         * have indexed it otherwise - so take the tombstone rather than stay
+         * pending on a deletion that can never succeed. With a record the
+         * drawer is on disk and out of reach, and tombstoning it would have the
+         * next scan announce it straight back. */
+        if (had || folder_path_addressable(f->path, fi->name)) {
+            log_printf(LOG_DEBUG, "worker: directory '%s' not empty yet; will retry",
+                       fi->name);
+            return 0;
+        }
+        log_printf(LOG_DEBUG, "worker: nothing to remove for '%s' - the path is "
+                   "too long for AmigaOS and we never had it", fi->name);
+    } else {
+        log_printf(LOG_INFO, "worker: applied peer deletion of directory '%s'",
                    fi->name);
-        return 0;
     }
-    log_printf(LOG_INFO, "worker: applied peer deletion of directory '%s'",
-               fi->name);
 
     meta_from_fileinfo(&tomb, fi);
     foldstate_lock(fs);

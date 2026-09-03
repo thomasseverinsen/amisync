@@ -8,6 +8,7 @@
  * name drops straight into AddPart().
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include <exec/memory.h>
@@ -27,6 +28,12 @@
 /* A generous join buffer: a folder path plus a relative name plus our temp
  * suffix, with headroom. */
 #define FULL_MAX  512
+
+/* The longest absolute path AmigaDOS will carry: dos.library hands names to
+ * handlers as BSTRs, whose single length byte caps them. Past it a path is not
+ * refused but silently clamped. So cap here rather than at FULL_MAX, or we read
+ * the wrong drawer and create a peer's files under wrong names. */
+#define AMIGA_PATH_MAX  254
 
 /* Filename length every AmigaOS filesystem stores intact: FFS's 30-char per
  * component is the floor, so a name no longer than this fits everywhere and
@@ -161,6 +168,8 @@ static int skippable(const char *name, int depth)
  * 'full'. Returns 1 on success, 0 if the joined path would not fit. */
 static int join_full(char *full, int cap, const char *root, const char *name)
 {
+    if (cap > AMIGA_PATH_MAX + 1)          /* never promise more than DOS takes */
+        cap = AMIGA_PATH_MAX + 1;
     if ((int)strlen(root) >= cap)
         return 0;
     strcpy(full, root);
@@ -220,7 +229,7 @@ static int ensure_path_dirs(const char *root, const char *rel, int include_last)
     char        abs[FULL_MAX];
     const char *p = rel;
 
-    if (strlen(root) >= sizeof(abs))
+    if (strlen(root) > AMIGA_PATH_MAX)
         return 0;
     strcpy(abs, root);
     for (;;) {
@@ -238,7 +247,9 @@ static int ensure_path_dirs(const char *root, const char *rel, int include_last)
         if (seglen > 0 && seglen < (int)sizeof(comp)) {
             memcpy(comp, seg, seglen);
             comp[seglen] = '\0';
-            AddPart((STRPTR)abs, (STRPTR)comp, sizeof(abs));
+            /* Bound to what DOS carries, and heed the result. */
+            if (!AddPart((STRPTR)abs, (STRPTR)comp, AMIGA_PATH_MAX + 1))
+                return 0;
             if (!ensure_dir_exists(abs))
                 return 0;
         }
@@ -412,12 +423,43 @@ int folder_hash(const char *path, const char *name, int64_t size,
 
 /* ---- recursive walk -------------------------------------------------- */
 
+static int warn_once(char kind, const char *path);   /* defined below */
+
 typedef struct {
     FolderWalkFn     cb;
     void            *ctx;
     const IgnoreSet *ig;
     int              stopped;    /* cb aborted: unwind the whole recursion */
+    int              deep;       /* directories cut off by FOLDER_MAX_DEPTH */
+    char             deep1[BEP_PATH_MAX];   /* first of them, to name in the log */
+    int              longp;      /* entries lost to a path-length limit */
+    char             longp1[128];           /* first of those, tail-first */
+    int              unopen;     /* directories Lock() would not hand us */
+    char             unopen1[128];          /* first of those, tail-first */
 } WalkCtx;
+
+/* Remember the first entry a counter saw, so its warning can name one. Keep
+ * the TAIL: these paths are long by definition, so their leading directories
+ * are identical for every entry and only the last components tell them apart. */
+static void note_example(int *count, char *buf, int bufsz,
+                         const char *relprefix, const char *name)
+{
+    const char *tail;
+    int         cut;
+
+    if ((*count)++ > 0)
+        return;
+    tail = strrchr(relprefix, '/');
+    cut  = tail != NULL;
+    if (!cut)
+        tail = relprefix;
+    else
+        tail++;
+    if (name)
+        snprintf(buf, bufsz, "%s%s/%s", cut ? ".../" : "", tail, name);
+    else
+        snprintf(buf, bufsz, "%s%s", cut ? ".../" : "", tail);
+}
 
 static void walk(WalkCtx *c, const char *abspath, const char *relprefix, int depth)
 {
@@ -425,8 +467,17 @@ static void walk(WalkCtx *c, const char *abspath, const char *relprefix, int dep
     struct FileInfoBlock *fib;
 
     lock = Lock((STRPTR)abspath, ACCESS_READ);
-    if (!lock)
+    if (!lock) {
+        /* Not a length problem, which is why it counts apart: join_full
+         * rejects those before we recurse, and folder_walk locks the root. What
+         * lands here is a protection bit, a media error, or a directory removed
+         * mid-scan, and "shorten the names" is useless advice for any of them.
+         * The directory was indexed by our caller; its subtree is what goes. */
+        if (*relprefix)
+            note_example(&c->unopen, c->unopen1, sizeof c->unopen1,
+                         relprefix, NULL);
         return;
+    }
     fib = AllocDosObject(DOS_FIB, NULL);
     if (!fib) {
         UnLock(lock);
@@ -442,8 +493,13 @@ static void walk(WalkCtx *c, const char *abspath, const char *relprefix, int dep
             if (skippable(name, depth))
                 continue;
 
-            if (!join_rel(e.name, relprefix, name))
-                continue;                      /* too long to name on the wire */
+            if (!join_rel(e.name, relprefix, name)) {
+                /* Too long to name on the wire, and it takes any subtree with
+                 * it: the recursion below never runs. */
+                note_example(&c->longp, c->longp1, sizeof c->longp1,
+                             relprefix, name);
+                continue;
+            }
 
             if (c->ig && ignore_match(c->ig, e.name))
                 continue;
@@ -461,9 +517,18 @@ static void walk(WalkCtx *c, const char *abspath, const char *relprefix, int dep
 
             if (isdir && depth + 1 < FOLDER_MAX_DEPTH) {
                 char sub[FULL_MAX];
-                if (!join_full(sub, sizeof(sub), abspath, name))
+                /* Past AMIGA_PATH_MAX: the subtree goes with it. */
+                if (!join_full(sub, sizeof(sub), abspath, name)) {
+                    note_example(&c->longp, c->longp1, sizeof c->longp1,
+                                 relprefix, name);
                     continue;
+                }
                 walk(c, sub, e.name, depth + 1);
+            } else if (isdir) {
+                /* Its subtree stays unindexed. deep1 and e.name are both
+                 * BEP_PATH_MAX, so this copy cannot truncate. */
+                if (c->deep++ == 0)
+                    memcpy(c->deep1, e.name, sizeof c->deep1);
             }
         }
     }
@@ -487,7 +552,36 @@ int folder_walk(const char *path, const IgnoreSet *ig, FolderWalkFn cb,
     c.ctx     = ctx;
     c.ig      = ig;
     c.stopped = 0;
+    c.deep    = 0;
+    c.longp   = 0;
+    c.unopen  = 0;
+    c.deep1[0] = c.longp1[0] = c.unopen1[0] = '\0';
     walk(&c, path, "", 0);
+
+    /* The directory at the cap syncs normally; everything below it is missing,
+     * so without this both ends would show "up to date" over files we never
+     * had. Latched per root: one line, not one per directory every 60 s. */
+    if (c.deep > 0 && warn_once('d', path))
+        log_printf(LOG_WARN, "folder: nothing below %d director%s in '%.48s' "
+                   "is synced - deeper than the %d-level limit (e.g. '%.100s')",
+                   c.deep, c.deep == 1 ? "y" : "ies", path,
+                   FOLDER_MAX_DEPTH, c.deep1);
+
+    /* Same for the two length limits - the wire path and dos.library's. They
+     * read alike to a user and take the same fix, so they share a line. On
+     * PFS3/SFS, where names run long, this bites before the depth cap does. */
+    if (c.longp > 0 && warn_once('l', path))
+        log_printf(LOG_WARN, "folder: %d path%s in '%.40s' too long to sync - "
+                   "shorten the names (e.g. '%.90s')",
+                   c.longp, c.longp == 1 ? "" : "s", path, c.longp1);
+
+    /* Its own line: these names are fine, so the advice above does not fit. */
+    if (c.unopen > 0 && warn_once('o', path))
+        log_printf(LOG_WARN, "folder: %d director%s in '%.40s' could not be "
+                   "opened - nothing below %s synced (e.g. '%.80s')",
+                   c.unopen, c.unopen == 1 ? "y" : "ies", path,
+                   c.unopen == 1 ? "it is" : "them is", c.unopen1);
+
     return c.stopped ? 0 : 1;
 }
 
@@ -604,6 +698,12 @@ int folder_load_ignores(const char *path, IgnoreSet *set)
                    full, set->dropped, IGNORE_MAX_PATTERNS,
                    IGNORE_PATTERN_MAX - 1);
     return 1;
+}
+
+int folder_path_addressable(const char *path, const char *name)
+{
+    char full[FULL_MAX];
+    return join_full(full, sizeof(full), path, name);
 }
 
 int folder_delete(const char *path, const char *name)

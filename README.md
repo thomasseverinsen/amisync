@@ -58,9 +58,11 @@ connections (dialling out or accepting inbound), deletions, directories,
 detection, local discovery, LZ4 message compression, and a persistent
 per-folder index that survives restarts without re-hashing.
 
-Limits: a folder tree nests at most **12 levels** deep; entries deeper than
-that are skipped. There is no fixed cap on the number of entries — the
-per-folder index grows as needed, so folder size is bounded by RAM.
+Limits: a folder tree nests at most **12 levels** deep, and AmigaOS itself
+will not carry a path longer than **254 characters**, counting the folder's
+own path. Anything past either limit is skipped, with a warning naming it in
+the log. There is no fixed cap on the number of entries — the per-folder index
+grows as needed, so folder size is bounded by RAM.
 
 Not supported: global discovery and relays (peers must be directly
 reachable — same LAN or a dialable address), symlinks,

@@ -161,7 +161,10 @@ void log_printf(LogLevel level, const char *fmt, ...)
 {
     struct DateStamp ds;
     va_list ap;
-    char    line[300];
+    /* Fits the 24-byte stamp, the longest message here, and a whole
+     * BEP_PATH_MAX name. Too small and a message carrying a long path is cut
+     * mid-word, losing everything after it - the part worth reading. */
+    char    line[448];
     long    y, mo, d, len;
     int     n;
 
