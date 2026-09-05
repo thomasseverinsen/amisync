@@ -45,7 +45,9 @@ reachable - same LAN or a dialable address), symlinks,
 receive-encrypted/untrusted peers, and per-device folder sharing - every
 configured folder is offered to every configured peer, so add only devices
 you would give all of those folders to. Folder trees nest at most 12
-levels deep.
+levels deep, and AmigaOS will not carry a path longer than 254 characters,
+counting the folder's own path; anything past either limit is skipped, with
+a warning naming it in the log.
 
 AmiSync is an independent project, not affiliated with or endorsed by
 Syncthing.
