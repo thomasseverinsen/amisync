@@ -2,7 +2,7 @@ Short:        Syncthing-compatible file sync daemon
 Author:       Thomas Severinsen
 Uploader:     amiga at mossfoundry dot com
 Type:         comm/net
-Version:      0.9.3
+Version:      0.9.4
 Architecture: m68k-amigaos >= 3.0.0
 Requires:     68020+, AmiSSL 5.x, bsdsocket TCP/IP stack, about 4MB RAM
 License:      MIT

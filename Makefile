@@ -325,7 +325,8 @@ $(BUILDDIR)/ssl_selftest_%: tools/ssl_selftest.c src/ssl.c src/netbase.c \
 # amisync-genid tool
 # ---------------------------------------------------------------------------
 GENID_SRCS = tools/amisync-genid.c src/device_id.c src/ssl.c src/netbase.c src/log.c
-GENID_HDRS = include/device_id.h include/ssl.h include/netbase.h include/log.h
+GENID_HDRS = include/device_id.h include/ssl.h include/netbase.h include/log.h \
+             include/version.h
 GENID_LIBS = -lamisslstubs
 
 genid: $(DISTDIR)/amisync-genid

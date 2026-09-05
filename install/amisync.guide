@@ -1,11 +1,11 @@
 @database "amisync.guide"
-@$VER: amisync.guide 0.9.3 (26.08.2026)
+@$VER: amisync.guide 0.9.4 (05.09.2026)
 @author "Thomas Severinsen"
 @(c) "2026 Thomas Severinsen, MIT licensed"
 @wordwrap
 @smartwrap
 
-@node Main "AmiSync 0.9.3"
+@node Main "AmiSync 0.9.4"
 
 @{b}AmiSync@{ub} - a Syncthing-compatible file synchronization daemon for
 AmigaOS 3.x (68020 and up)
