@@ -2,22 +2,20 @@
 @$VER: amisync.guide 0.9.4 (05.09.2026)
 @author "Thomas Severinsen"
 @(c) "2026 Thomas Severinsen, MIT licensed"
-@wordwrap
-@smartwrap
 
 @node Main "AmiSync 0.9.4"
 
 @{b}AmiSync@{ub} - a Syncthing-compatible file synchronization daemon for
 AmigaOS 3.x (68020 and up)
 
-  @{" Introduction    " link Intro}   what AmiSync and Syncthing are
+  @{" Introduction    " link Intro} what AmiSync and Syncthing are
   @{" Requirements    " link Require} what you need to run it
   @{" Installing      " link Install} unpacking and the Installer
-  @{" Setting up      " link Setup}   pairing with your other devices
+  @{" Setting up      " link Setup} pairing with your other devices
   @{" Running         " link Running} starting and stopping the daemon
   @{" Workbench       " link Workbench} the AppIcon and Tools menu
-  @{" ARexx           " link ARexx}   scripting the daemon
-  @{" Configuration   " link Config}  every S:amisync.conf option
+  @{" ARexx           " link ARexx} scripting the daemon
+  @{" Configuration   " link Config} every S:amisync.conf option
   @{" Versioning      " link Version} the .stversions safety net
   @{" Troubleshooting " link Trouble} when something is not right
   @{" Credits         " link Credits} authors and licenses

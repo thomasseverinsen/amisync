@@ -77,9 +77,70 @@ static void suppress_requesters(void)
         me->pr_WindowPtr = (APTR)-1;
 }
 
-/* Relaunch ourselves detached from the controlling CLI. Returns 1 if the
- * background copy was started (caller should exit), 0 on failure (caller
- * should run in the foreground instead).
+/* A node on the Shell's command search path (cli_CommandDir): a BPTR chain of
+ * directory locks, in the order the Shell searches them. */
+struct PathNode {
+    BPTR pn_Next;
+    BPTR pn_Lock;
+};
+
+/* Load a fresh, private copy of our own binary, searching where the Shell that
+ * started us would have.
+ *
+ * GetProgramName returns the command name as the Shell recorded it, and for a
+ * command found on the search path that is the bare "amisync" - which LoadSeg
+ * resolves against the CURRENT directory, not the directory the command
+ * actually came from. So "amisync" typed in a Shell whose CD was not C: loaded
+ * nothing at all, and the failure surfaced as the (quite wrong) low-memory
+ * message. Redo the Shell's own search instead: current directory first, then
+ * each lock on the CLI path list, then C:, where the installer puts us. */
+static BPTR load_self(const char *prog)
+{
+    BPTR                         seg, pl, old;
+    struct CommandLineInterface *cli;
+    char                         cpath[210];
+
+    seg = LoadSeg((STRPTR)prog);
+    if (seg != (BPTR)0)
+        return seg;
+
+    /* A name that already carries a path was ours to load and simply is not
+     * there; only a bare command name can live somewhere else. */
+    if (strpbrk(prog, ":/") != NULL)
+        return (BPTR)0;
+
+    cli = Cli();
+    if (cli != NULL) {
+        for (pl = cli->cli_CommandDir; pl != (BPTR)0; ) {
+            struct PathNode *pn = (struct PathNode *)BADDR(pl);
+
+            old = CurrentDir(pn->pn_Lock);
+            seg = LoadSeg((STRPTR)prog);
+            CurrentDir(old);
+            if (seg != (BPTR)0)
+                return seg;
+            pl = pn->pn_Next;
+        }
+    }
+
+    if (strlen(prog) + 3 <= sizeof(cpath)) {
+        strcpy(cpath, "C:");
+        strcat(cpath, prog);
+        seg = LoadSeg((STRPTR)cpath);
+    }
+    return seg;
+}
+
+/* relaunch_detached results: started, our binary could not be found/loaded,
+ * or the process itself could not be created. The last two need different
+ * advice, so keep them apart. */
+#define RELAUNCH_OK      1
+#define RELAUNCH_NOPROG  0
+#define RELAUNCH_NOMEM  (-1)
+
+/* Relaunch ourselves detached from the controlling CLI. Returns RELAUNCH_OK
+ * if the background copy was started (caller should exit), otherwise which of
+ * the two failures it was.
  *
  * The detach loads a FRESH, PRIVATE copy of our own binary and hands the new
  * seglist to CreateNewProc, which owns it (NP_FreeSeglist) and frees it only
@@ -97,12 +158,14 @@ static int relaunch_detached(void)
     struct Process *proc = NULL; /* the loop below always runs, but say so */
     int             try;
 
-    if (!GetProgramName(prog, sizeof(prog)))
-        return 0;
+    /* GetProgramName can fail (a Workbench start has no CLI to ask); the
+     * search below then looks for us under our installed name. */
+    if (!GetProgramName(prog, sizeof(prog)) || prog[0] == '\0')
+        strcpy(prog, "amisync");
 
-    seg = LoadSeg((STRPTR)prog);
+    seg = load_self(prog);
     if (seg == (BPTR)0)
-        return 0;
+        return RELAUNCH_NOPROG;
 
     nilin  = Open("NIL:", MODE_OLDFILE);
     nilout = Open("NIL:", MODE_NEWFILE);
@@ -110,7 +173,7 @@ static int relaunch_detached(void)
         if (nilin  != (BPTR)0) Close(nilin);
         if (nilout != (BPTR)0) Close(nilout);
         UnLoadSeg(seg);
-        return 0;
+        return RELAUNCH_NOMEM;
     }
 
     /* NP_Cli gives the child a real CLI context so the BACKGROUND flag
@@ -142,9 +205,9 @@ static int relaunch_detached(void)
         Close(nilin);
         Close(nilout);
         UnLoadSeg(seg);
-        return 0;
+        return RELAUNCH_NOMEM;
     }
-    return 1;
+    return RELAUNCH_OK;
 }
 
 /* The daemon proper: load config, then run. Split out of main() and its Config
@@ -208,6 +271,7 @@ int main(int argc, char **argv)
     int from_workbench = (argc == 0);
     int is_background  = has_arg(argc, argv, ARG_BACKGROUND);
     int no_detach      = has_arg(argc, argv, ARG_NODETACH);
+    int rc;
 
 #ifdef BOOTTRACE
     log_trace_init();
@@ -235,22 +299,29 @@ int main(int argc, char **argv)
 #ifdef BOOTTRACE
         log_printf(LOG_DEBUG, "bt: relaunching detached...");
 #endif
-        if (relaunch_detached()) {
+        rc = relaunch_detached();
+        if (rc == RELAUNCH_OK) {
 #ifdef BOOTTRACE
             log_printf(LOG_DEBUG, "bt: relaunch ok, original exiting");
 #endif
             printf("amisync: started in background\n");
             return RETURN_OK;
         }
-        /* Detach failed even after retries (heap too fragmented for a 128 KB
-         * stack). Do NOT fall through to run the daemon here: this copy is on
-         * the tiny CLI stack, and daemon_run would overflow it and corrupt
-         * memory. Fail cleanly and let the user reboot/retry - never crash. */
+        /* Detach failed: either we could not find our own binary to load, or
+         * the process would not start even after retries (heap too fragmented
+         * for a 128 KB stack). Do NOT fall through to run the daemon here:
+         * this copy is on the tiny CLI stack, and daemon_run would overflow it
+         * and corrupt memory. Fail cleanly, saying which it was - never
+         * crash. */
 #ifdef BOOTTRACE
         log_printf(LOG_DEBUG, "bt: relaunch FAILED after retries, exiting clean");
 #endif
-        printf("amisync: could not create the background process (low memory / "
-               "fragmentation) - reboot and retry\n");
+        if (rc == RELAUNCH_NOPROG)
+            printf("amisync: cannot find my own program file to relaunch - "
+                   "start amisync by its full path (e.g. C:amisync)\n");
+        else
+            printf("amisync: could not create the background process (low "
+                   "memory / fragmentation) - reboot and retry\n");
         return RETURN_FAIL;
     }
 
@@ -270,7 +341,7 @@ int main(int argc, char **argv)
              * fix is transparent: relaunch with a stack we DO size. (The
              * shipped icon declares enough on its own; this catches a
              * hand-made or copied one.) */
-            if (relaunch_detached())
+            if (relaunch_detached() == RELAUNCH_OK)
                 return RETURN_OK;
             return RETURN_FAIL;
         }
