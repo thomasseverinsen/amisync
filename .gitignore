@@ -50,6 +50,7 @@ dist/Amisync.info
 
 # Local notes not meant for the repo
 NOTES.local.md
+RELEASING.md
 
 # Internal development notes - kept locally, not published
 docs/
