@@ -7,8 +7,8 @@
 
 /* Bump BOTH on every release: AMISYNC_VERTAG below splices them into one
  * $VER: cookie, so a version without its date ships claiming the old one. */
-#define AMISYNC_VERSION  "0.9.5"
-#define AMISYNC_DATE     "07.09.2026"   /* dd.mm.yyyy */
+#define AMISYNC_VERSION  "0.9.6"
+#define AMISYNC_DATE     "09.09.2026"   /* dd.mm.yyyy */
 
 /* CPU variant this binary was built for, from the per-variant -m flags (the
  * Makefile builds 020/040/060 objects separately). For the startup banner. */
