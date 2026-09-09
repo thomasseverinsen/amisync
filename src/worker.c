@@ -239,6 +239,7 @@ static void build_cluster_config(const Config *cfg, FolderState *folders,
 #define WK_MAX_GONE        256   /* names a peer deleted while we had them parked */
 #define DEFER_DONE        0xFF   /* defer_tries marker: settled, drop the entry */
 #define WK_WINDOW            4   /* block Requests kept in flight (pipelining)  */
+#define WK_STAGE   (WK_WINDOW - 1)   /* blocks held that arrived ahead of their turn */
 /* FileInfo entries packed into one Index/IndexUpdate. The real limit is the
  * send buffer (a batch stops early when the next entry will not fit), so this
  * only bounds how large one message gets when the entries are small - which is
@@ -264,12 +265,15 @@ typedef struct {
 /* The in-flight download. Up to WK_WINDOW block Requests are outstanding at
  * once, so the peer's serve latency overlaps our disk writes instead of adding
  * a full round trip per block. The peer may answer them in ANY order, but the
- * staged temp can only be written forward (see FolderWriteResult), so a block
- * that arrives ahead of its turn goes on the same small redo list as a block
- * that failed verify and is re-requested (WK_MAX_RETRY per block for a failure;
- * reordering is not charged) ahead of fresh ones. The struct carries the file's
- * lean metadata plus the expected per-block hashes captured from the peer's
- * FileInfo - the same hashes we store in the shared index on completion. */
+ * temp can only be written forward (see FolderWriteResult), so a block that
+ * arrives ahead of its turn is held in a stage slot until the temp reaches it.
+ * WK_STAGE slots make that complete: with WK_WINDOW Requests out, a block can
+ * be at most WK_WINDOW - 1 places early. Only with no slot free (or no
+ * memory) is it re-requested, uncharged; the redo list is otherwise for
+ * blocks that failed verify (WK_MAX_RETRY each).
+ * The struct carries the file's lean metadata plus the expected per-block
+ * hashes captured from the peer's FileInfo - the same hashes we store in the
+ * shared index on completion. */
 typedef struct {
     int        active;
     int        folder_idx;
@@ -283,6 +287,13 @@ typedef struct {
     int        num_inflight;
     Inflight   redo[WK_WINDOW];  /* failed blocks awaiting re-request        */
     int        num_redo;
+    /* Held blocks. Buffers are allocated on first use at the file's block
+     * size and kept for the worker's life, growing if a later file's blocks
+     * are bigger; stage_cap is what each holds. Slot state is per download. */
+    int            stage_block[WK_STAGE];   /* block held, -1 = slot free   */
+    int32_t        stage_len[WK_STAGE];
+    unsigned char *stage_buf[WK_STAGE];
+    int32_t        stage_cap;
     FolderFile fh;               /* open temp file                           */
     char       folder_id[BEP_FOLDER_ID_MAX];
     char       tmp[WK_TMP_MAX];  /* temp file path (for finish/abort)        */
@@ -888,6 +899,84 @@ static int64_t now_seconds(void)
            (int64_t)ds.ds_Tick / TICKS_PER_SECOND;
 }
 
+/* Make every stage buffer at least the current file's block size. All or
+ * nothing: a half-grown set would leave a slot smaller than stage_cap says. */
+static int stage_ensure(Sync *S)
+{
+    int32_t        need = S->dl.fi.block_size;
+    unsigned char *nb[WK_STAGE];
+    int            i;
+
+    if (need <= S->dl.stage_cap)
+        return 1;
+    for (i = 0; i < WK_STAGE; i++) {
+        nb[i] = AllocVec((ULONG)need, MEMF_ANY);
+        if (!nb[i]) {
+            while (i-- > 0)
+                FreeVec(nb[i]);
+            return 0;
+        }
+    }
+    for (i = 0; i < WK_STAGE; i++) {
+        if (S->dl.stage_buf[i])
+            FreeVec(S->dl.stage_buf[i]);
+        S->dl.stage_buf[i] = nb[i];
+    }
+    S->dl.stage_cap = need;
+    return 1;
+}
+
+/* Hold a verified block that cannot be written yet. 0 if no slot is free or
+ * no memory: the caller re-requests it instead. */
+static int stage_put(Sync *S, int block, const unsigned char *data, int32_t len)
+{
+    int i, slot = -1;
+
+    for (i = 0; i < WK_STAGE; i++)
+        if (S->dl.stage_block[i] < 0) { slot = i; break; }
+    if (slot < 0 || !stage_ensure(S))
+        return 0;
+    memcpy(S->dl.stage_buf[slot], data, (size_t)len);
+    S->dl.stage_block[slot] = block;
+    S->dl.stage_len[slot]   = len;
+    return 1;
+}
+
+static int stage_empty(const Sync *S)
+{
+    int i;
+    for (i = 0; i < WK_STAGE; i++)
+        if (S->dl.stage_block[i] >= 0)
+            return 0;
+    return 1;
+}
+
+static void abort_download(Sync *S);
+
+/* The temp just reached 'next': write every held block that now fits, in
+ * order. Held blocks were verified before they were held. */
+static void stage_flush(Sync *S, int next)
+{
+    for (;;) {
+        int i, hit = -1;
+        for (i = 0; i < WK_STAGE; i++)
+            if (S->dl.stage_block[i] == next) { hit = i; break; }
+        if (hit < 0)
+            return;
+        if (folder_recv_write(S->dl.fh, (int64_t)next * S->dl.fi.block_size,
+                              S->dl.stage_buf[hit], S->dl.stage_len[hit])
+            != FOLDER_WRITE_OK) {
+            log_printf(LOG_WARN, "worker: write failed for '%s', aborting",
+                       S->dl.fi.name);
+            abort_download(S);
+            return;
+        }
+        S->dl.stage_block[hit] = -1;
+        S->dl.last_progress    = now_seconds();
+        next++;
+    }
+}
+
 static void handle_response(Sync *S, const unsigned char *body, int blen)
 {
     BepResponse rs;
@@ -934,13 +1023,23 @@ static void handle_response(Sync *S, const unsigned char *body, int blen)
             switch (folder_recv_write(S->dl.fh, off, rs.data, rs.data_len)) {
             case FOLDER_WRITE_OK:
                 S->dl.last_progress = now_seconds();
+                stage_flush(S, fl.block + 1);  /* whatever was waiting on it */
                 return;                        /* progress() refills the window */
             case FOLDER_WRITE_AHEAD:
                 /* The peer answered our pipelined Requests out of order and
                  * this block sits past the temp's end, which cannot be written
-                 * over a hole. Ask for it again once the blocks before it have
-                 * landed - and do not charge a retry, since nothing is wrong
-                 * with the block.
+                 * over a hole. Hold it, and let the slot it frees take a
+                 * FRESH request: a re-request would queue behind the next
+                 * fresh ones at the peer, so they would arrive early too, and
+                 * so on for the rest of the file. */
+                if (stage_put(S, fl.block, rs.data, rs.data_len)) {
+                    log_printf(LOG_DEBUG, "worker: block %d of '%s' arrived "
+                               "ahead of its turn; holding it",
+                               fl.block, S->dl.fi.name);
+                    return;
+                }
+                /* No slot or no memory: re-request, not charged a retry since
+                 * nothing is wrong with the block.
                  *
                  * The lowest outstanding block lands and the file advances -
                  * but only while every Request is eventually answered. One
@@ -2293,6 +2392,11 @@ static void start_download(Sync *S)
     S->dl.num_inflight = 0;
     S->dl.num_redo     = 0;
     S->dl.tmp[0]       = '\0';
+    {
+        int i;
+        for (i = 0; i < WK_STAGE; i++)
+            S->dl.stage_block[i] = -1;
+    }
     scopy(S->dl.folder_id, f->id, sizeof(S->dl.folder_id));
 
     S->dl.fh = folder_recv_open(f->path, t.fi.name, S->dl.tmp, sizeof(S->dl.tmp),
@@ -2374,7 +2478,8 @@ static int progress(Sync *S)
         }
 
         if (S->dl.next_block >= S->dl.num_blocks &&
-            S->dl.num_inflight == 0 && S->dl.num_redo == 0) {
+            S->dl.num_inflight == 0 && S->dl.num_redo == 0 &&
+            stage_empty(S)) {
             finalize_download(S);              /* all blocks in (or empty file) */
             /* Publish from INSIDE the loop, not only where the caller does it.
              * A file whose blocks all came from a local copy needs no network
@@ -3107,6 +3212,9 @@ done:
         }
         if (S->blockbuf)                        /* serve-side scratch, if grown */
             FreeVec(S->blockbuf);
+        for (i = 0; i < WK_STAGE; i++)
+            if (S->dl.stage_buf[i])
+                FreeVec(S->dl.stage_buf[i]);
         for (i = 0; i < CONFIG_MAX_FOLDERS; i++)
             if (S->ignores[i])
                 FreeVec(S->ignores[i]);

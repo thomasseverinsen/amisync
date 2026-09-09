@@ -57,14 +57,16 @@ void folder_sha256(const void *data, int len, unsigned char out[BEP_HASH_LEN]);
 void folder_content_hash(const unsigned char (*hashes)[BEP_HASH_LEN], int n,
                          unsigned char out[BEP_HASH_LEN]);
 
-/* Hash <path>/<name> (a 'size'-byte file) in its Syncthing block size into
- * 'hashes' (capacity 'cap' entries), setting *num_blocks and content_hash.
- * Returns 1 on success, 0 if the file cannot be read, -1 if it is too large for
- * us (its block size exceeds FOLDER_MAX_BLOCK_SIZE, or it needs more than 'cap'
- * blocks). */
+/* Hash <path>/<name> in its Syncthing block size into 'hashes' (capacity 'cap'
+ * entries), setting *num_blocks and content_hash. 'size' only picks the block
+ * size; the file is read to EOF, and the bytes actually read go to *bytes_read
+ * (optional). Returns 1 on success, 0 if the file cannot be read, -1 if it is
+ * too large for us (its block size exceeds FOLDER_MAX_BLOCK_SIZE, or it needs
+ * more than 'cap' blocks). */
 int folder_hash(const char *path, const char *name, int64_t size,
                 unsigned char (*hashes)[BEP_HASH_LEN], int cap,
-                int *num_blocks, unsigned char content_hash[BEP_HASH_LEN]);
+                int *num_blocks, unsigned char content_hash[BEP_HASH_LEN],
+                int64_t *bytes_read);
 
 /* A cheap directory listing entry (no hashing): used by rescan to spot changes
  * by name/size/mtime before deciding what to re-hash. */

@@ -336,13 +336,15 @@ static int hash_path(const char *full, unsigned char *buf,
                      int block_size,
                      unsigned char (*hashes)[BEP_HASH_LEN], int cap,
                      int *num_blocks, unsigned char content_hash[BEP_HASH_LEN],
-                     int *why)
+                     int *why, int64_t *bytes)
 {
     BPTR       fh;
     int        nb = 0;
+    int64_t    total = 0;
     SHA256_CTX cc;
 
     if (why) *why = HASH_OK;
+    if (bytes) *bytes = 0;
     *num_blocks = 0;
 
     fh = Open((STRPTR)full, MODE_OLDFILE);
@@ -379,6 +381,7 @@ static int hash_path(const char *full, unsigned char *buf,
             if (why) *why = HASH_TOOBIG;
             return -1;
         }
+        total += blockbytes;
         SHA256_Final(h, &bc);
         SHA256_Update(&cc, h, BEP_HASH_LEN);     /* fold into blocksHash */
         if (hashes)
@@ -391,12 +394,14 @@ static int hash_path(const char *full, unsigned char *buf,
 
     SHA256_Final(content_hash, &cc);
     *num_blocks = nb;
+    if (bytes) *bytes = total;
     return 1;
 }
 
 int folder_hash(const char *path, const char *name, int64_t size,
                 unsigned char (*hashes)[BEP_HASH_LEN], int cap,
-                int *num_blocks, unsigned char content_hash[BEP_HASH_LEN])
+                int *num_blocks, unsigned char content_hash[BEP_HASH_LEN],
+                int64_t *bytes_read)
 {
     char           full[FULL_MAX];
     unsigned char *buf;
@@ -415,7 +420,7 @@ int folder_hash(const char *path, const char *name, int64_t size,
         return -1;
     }
     rc = hash_path(full, buf, bs, hashes, cap,
-                   num_blocks, content_hash, NULL);
+                   num_blocks, content_hash, NULL, bytes_read);
 
     FreeVec(buf);
     return rc;
@@ -1247,7 +1252,7 @@ FolderRecvResult folder_recv_finish(const char *path, const char *name,
             return FOLDER_RECV_IO;
         }
         rc = hash_path(tmp, buf, bs, NULL, FOLDER_MAX_BLOCKS,
-                       &nb, got_hash, &why);
+                       &nb, got_hash, &why, NULL);
         if (rc != 1) {
             FreeVec(buf);
             if (info) {

@@ -564,6 +564,7 @@ static int scan_entry(void *vctx, const FolderEntry *e)
     FolderState  *fs = c->fs;
     unsigned char content_hash[BEP_HASH_LEN];
     int           nb, rc, changed;
+    int64_t       hashed;                  /* bytes folder_hash actually read */
 
     /* Stay responsive to shutdown: a big folder is many slow hashes, and the
      * daemon's QUIT/CTRL-C blocks until we return, so bail between files.
@@ -641,7 +642,7 @@ static int scan_entry(void *vctx, const FolderEntry *e)
 
     rc = folder_hash(c->cf->path, e->name, e->size, c->sc->bh,
                      FOLDER_MAX_BLOCKS, &nb,
-                     content_hash);              /* the slow part, OUTSIDE lock */
+                     content_hash, &hashed);     /* the slow part, OUTSIDE lock */
     if (rc != 1) {
         /* A hash that failed to READ has two very different causes, and the
          * walk cannot tell them apart on its own: the file is held open by
@@ -670,6 +671,20 @@ static int scan_entry(void *vctx, const FolderEntry *e)
                        e->name, c->cf->id);
         /* Still on disk even though we could not (re)hash it; keep any record
          * it has out of the deletion sweep. */
+        foldstate_lock(fs);
+        foldstate_mark_seen(fs, e->name);
+        foldstate_unlock(fs);
+        return 1;
+    }
+    /* 'e' came from the directory listing; the hash read the file to EOF. If
+     * they disagree the file was being written in between, and a record built
+     * from both would carry a size its block list does not fit. Leave it for
+     * the next scan, as Syncthing does. Marking it seen keeps an existing
+     * record out of the sweep; a file with no record has none to protect. */
+    if (hashed != e->size) {
+        log_printf(LOG_DEBUG, "scanner: '%s' changed while being hashed "
+                   "(%lld -> %lld bytes); deferring to the next scan",
+                   e->name, (long long)e->size, (long long)hashed);
         foldstate_lock(fs);
         foldstate_mark_seen(fs, e->name);
         foldstate_unlock(fs);
