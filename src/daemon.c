@@ -8,6 +8,7 @@
 #include <dos/var.h>
 #include <exec/ports.h>
 #include <exec/memory.h>
+#include <exec/execbase.h>
 #include <devices/timer.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -65,6 +66,56 @@ static int locale_utc_offset_s(int *found)
     CloseLibrary((struct Library *)LocaleBase);
     LocaleBase = NULL;
     return secs;
+}
+
+static unsigned long mb_whole(ULONG v) { return (unsigned long)(v >> 20); }
+static unsigned long mb_tenth(ULONG v) { return (unsigned long)(((v & 0xFFFFFUL) * 10) >> 20); }
+
+/* What this is running on, including whether the CPU is Emu68 (it exposes
+ * devicetree.resource and behaves like no real 68k). Doubles as the TCP/IP
+ * stack probe: one warning here rather than every worker failing later.
+ * Non-fatal; a stack started afterwards is picked up on the next dial. */
+static void log_platform(void)
+{
+    struct ExecBase *eb  = (struct ExecBase *)SysBase;
+    UWORD            af  = eb->AttnFlags;
+    const char      *cpu = (af & AFF_68060) ? "68060" : (af & AFF_68040) ? "68040" :
+                           (af & AFF_68030) ? "68030" : (af & AFF_68020) ? "68020" :
+                           (af & AFF_68010) ? "68010" : "68000";
+    const char      *fpu = (af & (AFF_68881 | AFF_68882 | AFF_FPU40)) ? "+FPU" : "";
+    const char      *emu = OpenResource((STRPTR)"devicetree.resource") ? " under Emu68" : "";
+    struct Library  *sb  = OpenLibrary((STRPTR)"bsdsocket.library", 4);
+    char             stack[80] = "none";
+    ULONG            chip = AvailMem(MEMF_CHIP), fast = AvailMem(MEMF_FAST);
+
+    if (sb) {
+        const UBYTE *q = (const UBYTE *)sb->lib_IdString;
+        int          n = 0, sp = 1;
+        /* lib_IdString is free-form and usually multi-line; flatten it. */
+        if (q && *q) {
+            while (*q && n < (int)sizeof stack - 1) {
+                UBYTE c = *q++;
+                if (c < ' ') c = ' ';
+                if (c == ' ' && sp) continue;
+                sp = (c == ' ');
+                stack[n++] = (char)c;
+            }
+            while (n > 0 && stack[n - 1] == ' ') n--;
+            stack[n] = '\0';
+        } else {
+            strcpy(stack, "bsdsocket.library (unnamed)");
+        }
+        CloseLibrary(sb);
+    }
+
+    log_printf(LOG_INFO, "daemon: platform: %s%s%s, Kickstart %u.%u, TCP/IP: %s, "
+               "%lu.%lu MB chip / %lu.%lu MB fast free",
+               cpu, fpu, emu, (unsigned)eb->LibNode.lib_Version,
+               (unsigned)eb->LibNode.lib_Revision, stack,
+               mb_whole(chip), mb_tenth(chip), mb_whole(fast), mb_tenth(fast));
+    if (!sb)
+        log_printf(LOG_WARN, "daemon: no TCP/IP stack found (bsdsocket.library) - "
+                   "start Roadshow/AmiTCP/Miami; peering is disabled until then");
 }
 
 /* Fast RAM free, for the startup memory trace below. AvailMem is a walk of the
@@ -763,20 +814,7 @@ int daemon_run(Config *cfg)
         }
     }
 
-    /* A TCP/IP stack (anything providing bsdsocket.library) is required for all
-     * networking. Probe it once here so the user gets one clear message rather
-     * than every worker failing cryptically later. Non-fatal: the daemon still
-     * answers ARexx, and a stack started afterwards will be picked up on the
-     * next dial. */
-    {
-        struct Library *sb = OpenLibrary("bsdsocket.library", 4);
-        if (sb)
-            CloseLibrary(sb);
-        else
-            log_printf(LOG_WARN,
-                       "daemon: no TCP/IP stack found (bsdsocket.library) - "
-                       "start Roadshow/AmiTCP/Miami; peering is disabled until then");
-    }
+    log_platform();                 /* also the TCP/IP stack probe */
 
     /* Open the shared AmiSSL instance once, here in the main process, before any
      * networking subprocess is spawned. Each worker/discovery subprocess binds
