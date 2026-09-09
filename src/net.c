@@ -26,13 +26,6 @@
 
 #include "net.h"
 
-/* bsdsocket's Errno() reports the classic BSD socket error numbers, which are
- * NOT the same as the C library's <errno.h> values. We define just the two we
- * test for, with the fixed bsdsocket-ABI numbering (see ndk sys/errno.h), so
- * the comparison is correct regardless of which errno.h the toolchain picks. */
-#define NET_EWOULDBLOCK  35
-#define NET_EINPROGRESS  36
-
 /* TCP_NODELAY lives in <netinet/tcp.h>, which the toolchain's headers make
  * awkward to include here; its BSD-ABI value is a stable 1. IPPROTO_TCP comes
  * from <netinet/in.h> (included above). */

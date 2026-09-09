@@ -670,6 +670,114 @@ static void test_buffer_growth(void)
     free(src); free(pipe); free(tx); free(rx);
 }
 
+/* ---- read-failure classification ------------------------------------
+ *
+ * The point of these: a peer that resets the connection and a peer that sends
+ * something unframeable both used to end the read with -1 and one shared log
+ * line, so a routine disconnect was indistinguishable from a protocol bug.
+ * Each case must now name itself, and only the transport-level ones may be
+ * reported as a reset. */
+
+/* A transport whose read always reports the connection torn down. */
+static int reset_read(void *ctx, void *b, int n)
+{
+    (void)ctx; (void)b; (void)n;
+    return BEP_READ_RESET;
+}
+/* A transport whose read fails without saying why. */
+static int broken_read(void *ctx, void *b, int n)
+{
+    (void)ctx; (void)b; (void)n;
+    return -1;
+}
+
+static void test_read_error_classification(void)
+{
+    MemPipe m;
+    BepConn c;
+    BepHeader hdr;
+    const unsigned char *body;
+    int blen;
+
+    /* A reset before a single byte of the frame arrives. */
+    memset(&m, 0, sizeof(m));
+    memset(&c, 0, sizeof(c));
+    c.t.ctx = &m; c.t.read = reset_read; c.t.write = mem_write;
+    ok("classify: conn init", bep_conn_init(&c));
+    ok("reset reads as an error, not a clean close",
+       bep_read_message(&c, &hdr, &body, &blen) == -1);
+    ok("reset is classified as a reset", bep_last_error_is_reset(&c));
+    ok("reset names itself", strstr(bep_last_error(&c), "reset") != NULL);
+
+    /* The same failure during the handshake's Hello. */
+    {
+        BepHello remote;
+        memset(&remote, 0, sizeof(remote));
+        c.t.read = reset_read;
+        ok("reset fails the Hello read", !bep_read_hello(&c, &remote));
+    }
+    ok("Hello reset is classified as a reset", bep_last_error_is_reset(&c));
+
+    /* A transport error that is NOT a reset must not be reported as one. */
+    c.t.read = broken_read;
+    ok("transport error reads as an error",
+       bep_read_message(&c, &hdr, &body, &blen) == -1);
+    ok("transport error is not a reset", !bep_last_error_is_reset(&c));
+
+    /* A clean close at a frame boundary stays a clean close. */
+    c.t.read = mem_read;
+    m.len = m.rpos = 0;
+    ok("clean EOF is not an error",
+       bep_read_message(&c, &hdr, &body, &blen) == 0);
+
+    /* A body length past the cap: a protocol fault, and it must say so
+     * rather than borrowing the reset wording. */
+    memset(&m, 0, sizeof(m));
+    m.rpos = 0;
+    {
+        unsigned char h[16];
+        BepHeader     ph;
+        int           hl;
+        memset(&ph, 0, sizeof(ph));
+        ph.type = BEP_PING;
+        ok("classify: encode header", bep_encode_header(&ph, h, sizeof(h), &hl));
+        put_be16(m.buf, (unsigned)hl);
+        memcpy(m.buf + 2, h, (size_t)hl);
+        put_be32(m.buf + 2 + hl, 0x7FFFFFFFu);      /* absurd body length */
+        m.len = 2 + hl + 4;
+    }
+    ok("oversized body is an error",
+       bep_read_message(&c, &hdr, &body, &blen) == -1);
+    ok("oversized body is not a reset", !bep_last_error_is_reset(&c));
+    ok("oversized body names the length",
+       strstr(bep_last_error(&c), "body length") != NULL);
+
+    /* An LZ4 body that does not expand to what it declared. */
+    memset(&m, 0, sizeof(m));
+    {
+        unsigned char h[16];
+        BepHeader     ph;
+        int           hl;
+        memset(&ph, 0, sizeof(ph));
+        ph.type        = BEP_INDEX;
+        ph.compression = BEP_COMPRESS_LZ4;
+        ok("classify: encode lz4 header",
+           bep_encode_header(&ph, h, sizeof(h), &hl));
+        put_be16(m.buf, (unsigned)hl);
+        memcpy(m.buf + 2, h, (size_t)hl);
+        put_be32(m.buf + 2 + hl, 8);                /* body length */
+        put_be32(m.buf + 2 + hl + 4, 4096);         /* claimed uncompressed */
+        memset(m.buf + 2 + hl + 8, 0xAB, 4);        /* not valid LZ4 */
+        m.len = 2 + hl + 4 + 8;
+    }
+    ok("bad LZ4 body is an error",
+       bep_read_message(&c, &hdr, &body, &blen) == -1);
+    ok("bad LZ4 body is not a reset", !bep_last_error_is_reset(&c));
+    ok("bad LZ4 body names LZ4", strstr(bep_last_error(&c), "LZ4") != NULL);
+
+    bep_conn_free(&c);
+}
+
 int main(void)
 {
     test_hello_roundtrip();
@@ -680,6 +788,7 @@ int main(void)
     test_framed_transport();
     test_index_batch();
     test_buffer_growth();
+    test_read_error_classification();
 
     if (failures) {
         printf("\n%d bep check(s) FAILED\n", failures);

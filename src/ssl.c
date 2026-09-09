@@ -37,6 +37,7 @@
 
 #define NETBASE_NO_BSDSOCKET_INLINE   /* ssl.c makes no raw socket calls */
 #include "netbase.h"
+#include "net.h"        /* NET_ERR_IS_RESET: bsdsocket errno numbering */
 #include "ssl.h"
 
 /* Transport diagnostics, switchable into a release build with -DBEP_DIAG (or
@@ -415,6 +416,19 @@ int ssl_read(SSL *ssl, void *buf, int len)
         default:
             SSLDIAG("ssl_read: n=%d SSL_get_error=%d errno=%d ossl=0x%08lx",
                     n, e, errno, (unsigned long)ERR_peek_last_error());
+            /* Only SSL_ERROR_SYSCALL may consult errno: it is the one error
+             * where OpenSSL is saying the fault is below it. Nothing clears
+             * errno before the read, so widening this to SSL_ERROR_SSL would
+             * let a stale value from an unrelated call dress a TLS fault up
+             * as a reset. n == 0 is a peer that went without close_notify.
+             *
+             * errno holds bsdsocket's BSD numbering here (AmiSSL_ErrNoPtr,
+             * see ssl_open) and is a process global shared with the other
+             * subprocesses, which run in one data segment. It is read in the
+             * same task immediately after the SSL_read that set it, and
+             * losing that race costs a misclassified log line, nothing more. */
+            if (e == SSL_ERROR_SYSCALL && (n == 0 || NET_ERR_IS_RESET(errno)))
+                return SSL_READ_RESET;
             return -1;
         }
     }

@@ -8,6 +8,8 @@
  * so we interoperate with newer Syncthing message layouts.
  */
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "bep.h"
@@ -1000,8 +1002,42 @@ static int grow_out_step(BepConn *c)
 
 /* ---- framed transport ----------------------------------------------- */
 
+/* Record why a read failed, for the caller to log, and return the -1 the read
+ * path owes its caller. Composed into the connection rather than logged from
+ * here: bep.c is built for the host tests without log.h, and the one place
+ * that knows what severity a failure deserves is the worker, not the framing.
+ * Clears 'last_reset' - only read_failed sets it. */
+static int bep_fail(BepConn *c, const char *fmt, ...)
+{
+    va_list ap;
+
+    c->last_reset = 0;
+    va_start(ap, fmt);
+    vsnprintf(c->last_err, sizeof c->last_err, fmt, ap);
+    va_end(ap);
+    BEPLOG("%s", c->last_err);
+    return -1;
+}
+
+/* Turn a read_full result other than 1 into that same -1, naming the part of
+ * the frame we were reading and separating a connection that went away from a
+ * transport that misbehaved. */
+static int read_failed(BepConn *c, int rc, const char *what)
+{
+    if (rc == BEP_READ_RESET) {
+        bep_fail(c, "peer reset the connection while reading %s", what);
+        c->last_reset = 1;
+    } else if (rc == 0) {
+        bep_fail(c, "peer closed mid-frame, part way through %s", what);
+    } else {
+        bep_fail(c, "transport read error reading %s", what);
+    }
+    return -1;
+}
+
 /* Read exactly 'len' bytes. Returns 1 if all arrived, 0 on clean EOF before
- * any/partway (treated as a closed connection), -1 on error. */
+ * any/partway (treated as a closed connection), BEP_READ_RESET if the
+ * connection was torn down under us, -1 on any other error. */
 static int read_full(BepConn *c, void *buf, int len)
 {
     unsigned char *p   = (unsigned char *)buf;
@@ -1011,7 +1047,9 @@ static int read_full(BepConn *c, void *buf, int len)
         int n = c->t.read(c->t.ctx, p + got, len - got);
         if (n > 0)      got += n;
         else if (n == 0) return 0;     /* peer closed */
-        else            return -1;
+        /* A reset is passed through rather than flattened: it is the one read
+         * failure that is not a fault, and the caller reports it differently. */
+        else            return n == BEP_READ_RESET ? BEP_READ_RESET : -1;
     }
     return 1;
 }
@@ -1051,18 +1089,52 @@ int bep_send_hello(BepConn *c, const BepHello *local)
 int bep_read_hello(BepConn *c, BepHello *remote)
 {
     unsigned char hdr[6];
-    int           len;
+    int           len, rc;
 
-    if (read_full(c, hdr, sizeof(hdr)) != 1)
+    c->last_err[0] = '\0';
+    c->last_reset  = 0;
+
+    /* Same reasoning as bep_read_message: a bare 0 cannot tell these apart,
+     * and a reset mid-handshake is much the most common of them. */
+    if ((rc = read_full(c, hdr, sizeof(hdr))) != 1) {
+        read_failed(c, rc, "the peer's Hello header");
         return 0;
-    if (get_be32(hdr) != BEP_MAGIC)
+    }
+    if (get_be32(hdr) != BEP_MAGIC) {
+        bep_fail(c, "peer's Hello has magic 0x%08lx, not BEP's",
+                 (unsigned long)get_be32(hdr));
         return 0;
+    }
     len = get_be16(hdr + 4);
-    if (len < 0 || len > BEP_MSG_MAX || !ensure_wire(c, len))
+    if (len < 0 || len > BEP_MSG_MAX) {
+        bep_fail(c, "peer's Hello claims %d bytes (max %d)", len, BEP_MSG_MAX);
         return 0;
-    if (read_full(c, c->wire, len) != 1)
+    }
+    if (!ensure_wire(c, len)) {
+        bep_fail(c, "no memory for a %d-byte Hello", len);
         return 0;
-    return bep_decode_hello(c->wire, len, remote);
+    }
+    if ((rc = read_full(c, c->wire, len)) != 1) {
+        read_failed(c, rc, "the peer's Hello");
+        return 0;
+    }
+    if (!bep_decode_hello(c->wire, len, remote)) {
+        bep_fail(c, "undecodable %d-byte Hello", len);
+        return 0;
+    }
+    return 1;
+}
+
+const char *bep_last_error(const BepConn *c)
+{
+    if (!c || !c->last_err[0])
+        return "no error recorded";
+    return c->last_err;
+}
+
+int bep_last_error_is_reset(const BepConn *c)
+{
+    return c && c->last_reset;
 }
 
 /* Don't bother compressing bodies below this: the LZ4 + 4-byte-size overhead and
@@ -1217,69 +1289,64 @@ int bep_read_message(BepConn *c, BepHeader *hdr,
     unsigned char lenbuf[4];
     int           hlen, mlen, rc;
 
+    c->last_err[0] = '\0';
+    c->last_reset  = 0;
+
     /* headerLen + Header */
     rc = read_full(c, lenbuf, 2);
     if (rc != 1) {
-        if (rc < 0)
-            BEPLOG("bep_read_message: read error on header length (transport)");
-        return rc;                       /* 0 = clean close, -1 = error */
+        if (rc == 0)
+            return 0;                    /* clean close at a frame boundary */
+        return read_failed(c, rc, "a message header length");
     }
     hlen = get_be16(lenbuf);
     /* hlen==0 is valid: a proto3 Header whose fields are all defaults
      * (type=CLUSTER_CONFIG, compression=NONE) serializes to zero bytes, which
      * is exactly what real Syncthing sends for its first ClusterConfig. We emit
      * the type explicitly ourselves, but must accept the omitted form here. */
-    if (hlen < 0 || hlen > BEP_MSG_MAX || !ensure_wire(c, hlen)) {
-        BEPLOG("bep_read_message: bad hlen=%d (max %d)", hlen, BEP_MSG_MAX);
-        return -1;
-    }
-    if (hlen > 0 && read_full(c, c->wire, hlen) != 1) {
-        BEPLOG("bep_read_message: short read of header (%d bytes)", hlen);
-        return -1;
-    }
-    if (!bep_decode_header(c->wire, hlen, hdr)) {
-        BEPLOG("bep_read_message: header decode failed (hlen=%d)", hlen);
-        return -1;
-    }
+    if (hlen < 0 || hlen > BEP_MSG_MAX)
+        return bep_fail(c, "header length %d out of range (max %d)",
+                        hlen, BEP_MSG_MAX);
+    if (!ensure_wire(c, hlen))
+        return bep_fail(c, "no memory for a %d-byte header", hlen);
+    if (hlen > 0 && (rc = read_full(c, c->wire, hlen)) != 1)
+        return read_failed(c, rc, "a message header");
+    if (!bep_decode_header(c->wire, hlen, hdr))
+        return bep_fail(c, "undecodable %d-byte message header", hlen);
 
     /* messageLen + message body */
-    if (read_full(c, lenbuf, 4) != 1) {
-        BEPLOG("bep_read_message: short read of message length");
-        return -1;
-    }
+    if ((rc = read_full(c, lenbuf, 4)) != 1)
+        return read_failed(c, rc, "a message body length");
     mlen = (int)get_be32(lenbuf);
-    if (mlen < 0 || mlen > BEP_MSG_MAX || !ensure_wire(c, mlen)) {
-        BEPLOG("bep_read_message: bad mlen=%d (max %d, type=%d compr=%d)",
-               mlen, BEP_MSG_MAX, hdr->type, hdr->compression);
-        return -1;
-    }
-    if (mlen > 0 && read_full(c, c->wire, mlen) != 1) {
-        BEPLOG("bep_read_message: short read of body (mlen=%d)", mlen);
-        return -1;
-    }
+    if (mlen < 0 || mlen > BEP_MSG_MAX)
+        return bep_fail(c, "body length %d out of range (max %d, type %d, "
+                        "compression %d)", mlen, BEP_MSG_MAX, hdr->type,
+                        hdr->compression);
+    if (!ensure_wire(c, mlen))
+        return bep_fail(c, "no memory for a %d-byte body", mlen);
+    if (mlen > 0 && (rc = read_full(c, c->wire, mlen)) != 1)
+        return read_failed(c, rc, "a message body");
 
     if (hdr->compression == BEP_COMPRESS_LZ4) {
         /* Syncthing frames LZ4 as [uint32 BE uncompressed size][lz4 block]. */
         int usize, dec;
-        if (mlen < 4) {
-            BEPLOG("bep_read_message: LZ4 mlen=%d < 4", mlen);
-            return -1;
-        }
+        if (mlen < 4)
+            return bep_fail(c, "LZ4 body of %d bytes is too short to carry "
+                            "its size prefix", mlen);
         usize = (int)get_be32(c->wire);
         /* Grow 'plain' to hold the decompressed body; the compressed body sits in
          * 'wire' and bep_ensure_cap preserves it across the grow. */
-        if (usize < 0 || usize > BEP_MSG_MAX || !ensure_plain(c, usize)) {
-            BEPLOG("bep_read_message: LZ4 bad usize=%d (max %d)",
-                   usize, BEP_MSG_MAX);
-            return -1;
-        }
+        if (usize < 0 || usize > BEP_MSG_MAX)
+            return bep_fail(c, "LZ4 body claims %d bytes uncompressed "
+                            "(max %d)", usize, BEP_MSG_MAX);
+        if (!ensure_plain(c, usize))
+            return bep_fail(c, "no memory to expand a %d-byte LZ4 body",
+                            usize);
         dec = LZ4_decompress_safe((const char *)c->wire + 4,
                                   (char *)c->plain, mlen - 4, usize);
-        if (dec != usize) {
-            BEPLOG("bep_read_message: LZ4 decode dec=%d != usize=%d (mlen=%d)",
-                   dec, usize, mlen);
-            return -1;
-        }
+        if (dec != usize)
+            return bep_fail(c, "LZ4 body expanded to %d, not the %d it "
+                            "declared (%d compressed)", dec, usize, mlen);
         *body    = c->plain;
         *bodylen = usize;
     } else {
@@ -1292,14 +1359,20 @@ int bep_read_message(BepConn *c, BepHeader *hdr,
 int bep_handshake(BepConn *c, const BepHello *local, BepHello *remote,
                   const BepClusterConfig *cc)
 {
-    /* Both sides send Hello immediately, then read the peer's. */
-    if (!bep_send_hello(c, local))
+    /* Both sides send Hello immediately, then read the peer's. The sends need
+     * a reason of their own - bep_read_hello already sets one on every path it
+     * can fail on - or a failed write reports as "no error recorded". */
+    if (!bep_send_hello(c, local)) {
+        bep_fail(c, "could not send our Hello");
         return 0;
+    }
     if (!bep_read_hello(c, remote))
         return 0;
     /* Our ClusterConfig is the first post-Hello message we send; the peer's is
      * read by the caller's message loop. */
-    if (!bep_send_cluster_config(c, cc))
+    if (!bep_send_cluster_config(c, cc)) {
+        bep_fail(c, "could not send our ClusterConfig");
         return 0;
+    }
     return 1;
 }

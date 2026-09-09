@@ -17,6 +17,29 @@
 
 #define NET_INVALID_SOCKET  (-1)
 
+/* bsdsocket's Errno() reports the classic BSD socket error numbers, which are
+ * NOT the same as the C library's <errno.h> values. They are spelled out here,
+ * with the fixed bsdsocket-ABI numbering (see ndk sys/errno.h), so every module
+ * that has to read a socket error compares against the same constants
+ * regardless of which errno.h the toolchain picks. Macros only: including this
+ * header for them adds no link dependency on net.c. */
+#define NET_EPIPE           32
+#define NET_EWOULDBLOCK     35
+#define NET_EINPROGRESS     36
+#define NET_ENETRESET       52
+#define NET_ECONNABORTED    53
+#define NET_ECONNRESET      54
+#define NET_ENOTCONN        57
+#define NET_ETIMEDOUT       60
+
+/* True when 'e' means the connection was torn down under us - by the peer, by
+ * a middlebox, or by the stack giving up on it - rather than something either
+ * end got wrong at the protocol level. See the read path in bep.c. */
+#define NET_ERR_IS_RESET(e) \
+    ((e) == NET_ECONNRESET   || (e) == NET_ECONNABORTED || \
+     (e) == NET_EPIPE        || (e) == NET_ENOTCONN     || \
+     (e) == NET_ENETRESET    || (e) == NET_ETIMEDOUT)
+
 /* Connect a TCP socket to host:port, abandoning the attempt after
  * timeout_secs (0 = no timeout: wait as long as the connect takes). 'host' may
  * be a dotted quad or a hostname. Returns a blocking socket, or

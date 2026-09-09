@@ -81,7 +81,9 @@ static void scopy(char *dst, const char *src, int cap)
 
 static int w_read(void *ctx, void *buf, int len)
 {
-    return ssl_read((SSL *)ctx, buf, len);
+    int n = ssl_read((SSL *)ctx, buf, len);   /* mapped, so the two constants
+                                               * need not agree */
+    return n == SSL_READ_RESET ? BEP_READ_RESET : n;
 }
 
 static int w_write(void *ctx, const void *buf, int len)
@@ -2689,11 +2691,22 @@ static int worker_sync(Sync *S)
             int                  blen;
             int                  r = bep_read_message(S->conn, &hdr, &body, &blen);
 
-            if (r <= 0) {
-                log_printf(r == 0 ? LOG_INFO : LOG_WARN,
-                           "worker: bep_read_message r=%d (%s)", r,
-                           r == 0 ? "peer closed" : "read/framing error");
-                return r == 0 ? 0 : 1;         /* peer closed / error */
+            if (r == 0) {
+                log_printf(LOG_INFO, "worker: peer closed the connection");
+                return 0;
+            }
+            if (r < 0) {
+                /* A reset is routine - the dialer is back in seconds, and a
+                 * Syncthing peer resets us for its own reasons, notably while
+                 * it has not yet accepted this device or the folder share. A
+                 * protocol fault means one of us has the wire format wrong. */
+                if (bep_last_error_is_reset(S->conn))
+                    log_printf(LOG_INFO, "worker: %s; reconnecting",
+                               bep_last_error(S->conn));
+                else
+                    log_printf(LOG_WARN, "worker: protocol error from peer: %s",
+                               bep_last_error(S->conn));
+                return 1;
             }
 
             switch (hdr.type) {
@@ -2929,7 +2942,14 @@ static int worker_run(WorkerStartup *st)
         }
 
         if (!bep_handshake(conn, &local, &remote, &cc)) {
-            log_printf(LOG_WARN, "worker: BEP handshake failed");
+            /* Same split as the message loop: a reset mid-handshake says
+             * nothing about our wire format. */
+            if (bep_last_error_is_reset(conn))
+                log_printf(LOG_INFO, "worker: %s during the BEP handshake; "
+                           "reconnecting", bep_last_error(conn));
+            else
+                log_printf(LOG_WARN, "worker: BEP handshake failed: %s",
+                           bep_last_error(conn));
             goto done;
         }
         log_printf(LOG_INFO, "worker: connected; peer is \"%s\" (%s %s), %d folder(s) shared",

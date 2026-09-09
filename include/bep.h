@@ -85,8 +85,15 @@
 
 /* ---- transport abstraction ------------------------------------------ */
 
-/* read: fill up to 'len' bytes; return bytes read (>0), 0 on clean EOF, -1 on
- * error. write: send 'len' bytes; return bytes written (>0) or -1 on error. */
+/* A transport read that failed because the connection was torn down under us
+ * rather than because of anything in the bytes. The transport layer has its
+ * own spelling of this (ssl.h's SSL_READ_RESET) which the worker maps to this
+ * one explicitly, so the two values need not agree. */
+#define BEP_READ_RESET  (-2)
+
+/* read: fill up to 'len' bytes; return bytes read (>0), 0 on clean EOF,
+ * BEP_READ_RESET if the connection was reset under us, -1 on any other error.
+ * write: send 'len' bytes; return bytes written (>0) or -1 on error. */
 typedef int (*BepReadFn)(void *ctx, void *buf, int len);
 typedef int (*BepWriteFn)(void *ctx, const void *buf, int len);
 
@@ -152,6 +159,13 @@ typedef struct {
     int32_t        plain_cap;
     int32_t        out_cap;
     unsigned char  frame[BEP_FRAME_MAX + BEP_COALESCE_MAX];
+    /* Why the last read failed, since the return value cannot carry it: the
+     * read path has a dozen ways to reach -1 and they mean very different
+     * things. 'last_reset' picks out the one that is not a fault, so the
+     * caller can log it at the severity it deserves. Both are only
+     * meaningful immediately after a read returned <= 0. */
+    char           last_err[96];
+    int            last_reset;
 } BepConn;
 
 /* Allocate the three scratch buffers at BEP_MSG_INIT. Call once after zeroing
@@ -464,6 +478,15 @@ int bep_send_index_file(BepConn *c, int type, const char *folder,
                         const BepFileInfo *meta,
                         const unsigned char (*hashes)[BEP_HASH_LEN],
                         int num_blocks);
+
+/* Why the last read on this connection failed, as a short sentence, or a
+ * fixed "no error recorded" if none has. Valid until the next read. Never
+ * NULL. */
+const char *bep_last_error(const BepConn *c);
+
+/* True if that failure was the connection being torn down under us (a peer
+ * reset, a vanished link) rather than anything wrong with the protocol. */
+int bep_last_error_is_reset(const BepConn *c);
 
 /* Read one post-Hello message. On success fills *hdr, points *body at the
  * decoded (decompressed if needed) message body inside the BepConn, and sets

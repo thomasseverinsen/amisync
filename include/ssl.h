@@ -88,8 +88,14 @@ int ssl_get_alpn(SSL *ssl, char *buf, int cap);
 
 /* ---- session I/O ----------------------------------------------- */
 
+/* ssl_read's return for "the connection was torn down under us": the peer
+ * reset it, or it died without a TLS close_notify. Distinct from -1, which
+ * the caller has to treat as a fault worth reporting. */
+#define SSL_READ_RESET  (-2)
+
 /* Blocking read/write over the TLS session. ssl_read returns the number of
- * bytes read (>0), 0 on a clean peer shutdown, or -1 on error. ssl_write is
+ * bytes read (>0), 0 on a clean peer shutdown, SSL_READ_RESET when the
+ * connection was torn down under us, or -1 on any other error. ssl_write is
  * all-or-nothing (partial writes are not enabled): it returns 'len' or -1. */
 int ssl_read(SSL *ssl, void *buf, int len);
 int ssl_write(SSL *ssl, const void *buf, int len);
