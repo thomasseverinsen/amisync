@@ -248,6 +248,10 @@ static void build_cluster_config(const Config *cfg, FolderState *folders,
  * blocking write. */
 #define WK_INDEX_BATCH     256
 #define WK_MAX_FETCH         3   /* attempts at one file before we stop trying  */
+/* Seconds an active download may go without a single block reaching the temp
+ * before it is abandoned. Not a speed limit: one block landing resets it, so
+ * even a very slow link clears it every block. */
+#define WK_STALL_SECS      120
 #define WK_MAX_STALLED       8   /* given-up files remembered for the backlog   */
 
 /* One outstanding block Request of the in-flight download. */
@@ -274,6 +278,7 @@ typedef struct {
     int        num_blocks;
     int        next_block;       /* next fresh block to request              */
     int        resumed;          /* temp carried blocks from an earlier run  */
+    int64_t    last_progress;    /* when a block last reached the temp (secs) */
     Inflight   inflight[WK_WINDOW];
     int        num_inflight;
     Inflight   redo[WK_WINDOW];  /* failed blocks awaiting re-request        */
@@ -871,6 +876,18 @@ static void abort_download(Sync *S)
     requeue_download(S, 1);
 }
 
+/* Only ever compared against another reading of itself, so the epoch does not
+ * matter. A clock moved backwards mid-transfer delays a stall being noticed
+ * rather than tripping one early, which is the safe direction. */
+static int64_t now_seconds(void)
+{
+    struct DateStamp ds;
+
+    DateStamp(&ds);
+    return (int64_t)ds.ds_Days * 86400 + (int64_t)ds.ds_Minute * 60 +
+           (int64_t)ds.ds_Tick / TICKS_PER_SECOND;
+}
+
 static void handle_response(Sync *S, const unsigned char *body, int blen)
 {
     BepResponse rs;
@@ -879,8 +896,13 @@ static void handle_response(Sync *S, const unsigned char *body, int blen)
     int32_t     want;
     int         i, slot = -1;
 
-    if (!bep_decode_response(body, blen, &rs))
+    if (!bep_decode_response(body, blen, &rs)) {
+        /* Not harmless: only a matching id clears a window slot, so the
+         * Request this answered is now unanswerable. See FOLDER_WRITE_AHEAD. */
+        log_printf(LOG_WARN, "worker: undecodable Response (%d bytes); a block "
+                   "request is now unanswerable", blen);
         return;
+    }
     if (rs.code == BEP_ERR_NONE)
         S->st->bytes_in += rs.data_len;        /* live download total (STATUS) */
     if (!S->dl.active)
@@ -911,18 +933,32 @@ static void handle_response(Sync *S, const unsigned char *body, int blen)
         if (memcmp(h, S->dl.hashes[fl.block], BEP_HASH_LEN) == 0) {
             switch (folder_recv_write(S->dl.fh, off, rs.data, rs.data_len)) {
             case FOLDER_WRITE_OK:
+                S->dl.last_progress = now_seconds();
                 return;                        /* progress() refills the window */
             case FOLDER_WRITE_AHEAD:
                 /* The peer answered our pipelined Requests out of order and
                  * this block sits past the temp's end, which cannot be written
                  * over a hole. Ask for it again once the blocks before it have
                  * landed - and do not charge a retry, since nothing is wrong
-                 * with the block. The lowest outstanding block always lands
-                 * (its offset is at most the temp's end), so the file makes
-                 * progress every round however the peer orders its answers. */
+                 * with the block.
+                 *
+                 * The lowest outstanding block lands and the file advances -
+                 * but only while every Request is eventually answered. One
+                 * that is not (a Response lost, never sent, or undecodable)
+                 * holds its window slot for the life of the connection, since
+                 * only a matching id clears one and nothing re-sends it. The
+                 * blocks above it then bounce here forever, each decrypted,
+                 * hashed and discarded: a livelock at full CPU and link that
+                 * reports nothing. WK_STALL_SECS in progress() bounds it. */
                 log_printf(LOG_DEBUG, "worker: block %d of '%s' arrived ahead "
                            "of its turn; re-requesting", fl.block, S->dl.fi.name);
-                S->dl.redo[S->dl.num_redo++] = fl;   /* fits: window-bounded */
+                /* Fits, and in fact never holds more than one: this runs
+                 * once per message, it has just freed an inflight slot, and
+                 * worker_sync calls progress() before every read - which
+                 * drains the list into that slot. So the pop order below is
+                 * not a question; it would become one if the loop ever
+                 * handled several messages between refills. */
+                S->dl.redo[S->dl.num_redo++] = fl;
                 return;
             default:
                 log_printf(LOG_WARN, "worker: write failed for '%s', aborting",
@@ -2267,9 +2303,10 @@ static void start_download(Sync *S)
         requeue_download(S, 1);            /* the want was popped: do not lose it */
         return;
     }
-    S->dl.next_block = resume_from;
-    S->dl.resumed    = resume_from > 0;
-    S->dl.active     = 1;
+    S->dl.next_block    = resume_from;
+    S->dl.resumed       = resume_from > 0;
+    S->dl.last_progress = now_seconds();
+    S->dl.active        = 1;
     if (resume_from > 0)
         log_printf(LOG_INFO, "worker: resuming '%s' from block %d/%d",
                    t.fi.name, resume_from, t.num_blocks);
@@ -2322,6 +2359,19 @@ static int progress(Sync *S)
             start_download(S);
         if (!S->dl.active)
             return 1;                          /* nothing left to fetch */
+
+        /* Bound the livelock a lost Response opens up (see the AHEAD branch
+         * of handle_response). Measured from the last block that reached the
+         * temp, and abort_download keeps the staged temp and re-queues, so
+         * the next attempt resumes from what did land - with WK_MAX_FETCH
+         * still capping how many attempts it gets. */
+        if (now_seconds() - S->dl.last_progress > WK_STALL_SECS) {
+            log_printf(LOG_WARN, "worker: '%s' has not advanced in %d seconds "
+                       "(%d block(s) outstanding); abandoning this attempt",
+                       S->dl.fi.name, WK_STALL_SECS, S->dl.num_inflight);
+            abort_download(S);
+            continue;                          /* start_download picks the next */
+        }
 
         if (S->dl.next_block >= S->dl.num_blocks &&
             S->dl.num_inflight == 0 && S->dl.num_redo == 0) {
