@@ -27,6 +27,10 @@
  * that will share the AmiSSL instance. */
 int ssl_open(void);
 
+/* The loaded AmiSSL library's ID string, or NULL before ssl_open succeeds.
+ * Raw: may carry CR/LF. */
+const char *ssl_id_string(void);
+
 /* PARENT/standalone: close the shared AmiSSL instance and this task's bsdsocket
  * base. Safe even if ssl_open() failed or was never called; idempotent. Call
  * only after every subprocess sharing the instance has exited. */

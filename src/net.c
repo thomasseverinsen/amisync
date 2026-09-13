@@ -100,6 +100,12 @@ int net_wait(int sock, int timeout_secs, unsigned long extra_sigs,
     return wait_io(sock, 0, timeout_secs, extra_sigs, got_sigs);
 }
 
+int net_wait_writable(int sock, int timeout_secs, unsigned long extra_sigs,
+                      unsigned long *got_sigs)
+{
+    return wait_io(sock, 1, timeout_secs, extra_sigs, got_sigs);
+}
+
 int net_connect(const char *host, unsigned short port, int timeout_secs)
 {
     struct in_addr     addr;

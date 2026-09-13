@@ -75,6 +75,20 @@ static unsigned long mb_tenth(ULONG v) { return (unsigned long)(((v & 0xFFFFFUL)
  * devicetree.resource and behaves like no real 68k). Doubles as the TCP/IP
  * stack probe: one warning here rather than every worker failing later.
  * Non-fatal; a stack started afterwards is picked up on the next dial. */
+/* Copy a library's free-form, usually multi-line ID string as one line. */
+static void flatten_id(char *out, int cap, const char *id)
+{
+    int n = 0, sp = 1;
+    for (; id && *id && n < cap - 1; id++) {
+        char c = *id < ' ' ? ' ' : *id;
+        if (c == ' ' && sp) continue;
+        sp = (c == ' ');
+        out[n++] = c;
+    }
+    while (n > 0 && out[n - 1] == ' ') n--;
+    out[n] = '\0';
+}
+
 static void log_platform(void)
 {
     struct ExecBase *eb  = (struct ExecBase *)SysBase;
@@ -89,22 +103,11 @@ static void log_platform(void)
     ULONG            chip = AvailMem(MEMF_CHIP), fast = AvailMem(MEMF_FAST);
 
     if (sb) {
-        const UBYTE *q = (const UBYTE *)sb->lib_IdString;
-        int          n = 0, sp = 1;
-        /* lib_IdString is free-form and usually multi-line; flatten it. */
-        if (q && *q) {
-            while (*q && n < (int)sizeof stack - 1) {
-                UBYTE c = *q++;
-                if (c < ' ') c = ' ';
-                if (c == ' ' && sp) continue;
-                sp = (c == ' ');
-                stack[n++] = (char)c;
-            }
-            while (n > 0 && stack[n - 1] == ' ') n--;
-            stack[n] = '\0';
-        } else {
+        const char *q = (const char *)sb->lib_IdString;
+        if (q && *q)
+            flatten_id(stack, sizeof stack, q);
+        else
             strcpy(stack, "bsdsocket.library (unnamed)");
-        }
         CloseLibrary(sb);
     }
 
@@ -829,6 +832,10 @@ int daemon_run(Config *cfg)
         log_printf(LOG_ERROR,
                    "daemon: AmiSSL unavailable; TLS peering disabled");
         ssl_close();
+    } else {
+        char id[80];                       /* which CPU variant got loaded */
+        flatten_id(id, sizeof id, ssl_id_string());
+        log_printf(LOG_INFO, "daemon: AmiSSL: %s", id[0] ? id : "(unnamed)");
     }
     mem_stage("ssl_open", &memtrace);
 

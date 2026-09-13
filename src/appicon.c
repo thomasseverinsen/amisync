@@ -39,6 +39,7 @@
 #include <exec/memory.h>
 #include <intuition/intuition.h>
 #include <workbench/workbench.h>
+#include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/icon.h>
 #include <proto/intuition.h>
@@ -98,7 +99,28 @@ struct AppIconUI {
     struct DiskObject  *dobj;      /* from icon file or GetDefDiskObject   */
     int                 announced; /* logged the successful placement once */
     char                label[64]; /* must outlive the icon (WB reads it)  */
+    long                relabelled; /* when the icon was last re-added     */
 };
+
+/* A relabel is a remove + add. The count in "Syncing (N files)" changes
+ * nearly every tick, so a count-only change waits this long; a state change
+ * goes at once. */
+#define APPICON_RELABEL_SECS 10
+
+static long now_seconds(void)
+{
+    struct DateStamp ds;
+
+    DateStamp(&ds);
+    return ds.ds_Days * 86400L + ds.ds_Minute * 60L + ds.ds_Tick / 50;
+}
+
+/* Length of the status text up to its "(count)" part. */
+static int state_len(const char *s)
+{
+    const char *p = strchr(s, '(');
+    return p ? (int)(p - s) : (int)strlen(s);
+}
 
 /* Lazy-open intuition.library for the two fallback requesters. Returns 0 if
  * it cannot open, which on a running system never happens. */
@@ -188,6 +210,8 @@ static void appicon_try_add(AppIconUI *ui)
 
     if (!ui->icon) {
         ui->icon = AddAppIconA(0, 0, ui->label, ui->port, 0, ui->dobj, NULL);
+        if (ui->icon)
+            ui->relabelled = now_seconds();
         if (ui->icon && !ui->announced) {
             log_printf(LOG_INFO, "appicon: placed on the Workbench backdrop");
             ui->announced = 1;
@@ -226,6 +250,13 @@ void appicon_update(AppIconUI *ui, const char *status)
         return;
 
     if (ui->icon && strcmp(ui->label, status) != 0) {
+        int a = state_len(ui->label), b = state_len(status);
+
+        if (a == b && strncmp(ui->label, status, a) == 0 &&
+            now_seconds() - ui->relabelled < APPICON_RELABEL_SECS)
+            return;                        /* count-only change: not yet    */
+        log_printf(LOG_DEBUG, "appicon: relabel \"%s\" -> \"%s\"",
+                   ui->label, status);
         /* Honour the answer rather than assume it. The invariant below - only
          * rewrite the label while no icon holds it, because Workbench reads
          * this buffer for as long as the icon is placed - was asserted by a

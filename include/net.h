@@ -62,6 +62,9 @@ int  net_accept(int lsock, char *peer_ip, int peer_ip_len);
  * wanted signal fired, 0 on timeout, -1 on error. */
 int  net_wait(int sock, int timeout_secs, unsigned long extra_sigs,
               unsigned long *got_sigs);
+/* Same, but for writability: the socket can take more data. */
+int  net_wait_writable(int sock, int timeout_secs, unsigned long extra_sigs,
+                       unsigned long *got_sigs);
 
 /* Disable Nagle (TCP_NODELAY) on a connected socket. Best-effort, no return. */
 void net_set_nodelay(int sock);

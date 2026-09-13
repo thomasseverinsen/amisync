@@ -105,6 +105,11 @@ int ssl_open(void)
     return 1;
 }
 
+const char *ssl_id_string(void)
+{
+    return AmiSSLBase ? (const char *)AmiSSLBase->lib_IdString : NULL;
+}
+
 void ssl_close(void)
 {
     /* CloseAmiSSL() is only valid once AmiSSL actually opened. Per the AmiSSL v5

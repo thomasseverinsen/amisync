@@ -67,6 +67,13 @@ typedef char bep_counters_hold_peers[BEP_MAX_COUNTERS >= CONFIG_MAX_PEERS ? 1 : 
  * that the table cannot be pinned shut. */
 #define WORKER_HELLO_SECS  20
 
+/* Wait, bounded, for the socket before each send, so a stalled link fails
+ * the send instead of holding the worker forever. One TLS record per wait,
+ * so a stall between records is caught too. */
+#define WORKER_SEND_SECS      120
+#define WORKER_SEND_CHUNK   16384
+#define WORKER_SLOW_SEND_SECS   5   /* log a send that took longer than this */
+
 /* Length-bounded copy that always NUL-terminates. */
 static void scopy(char *dst, const char *src, int cap)
 {
@@ -79,16 +86,55 @@ static void scopy(char *dst, const char *src, int cap)
 
 /* ---- BEP transport bound to an SSL session -------------------------- */
 
+typedef struct {
+    SSL *ssl;
+    int  sock;
+} WTransport;
+
+static int64_t now_seconds(void);
+
 static int w_read(void *ctx, void *buf, int len)
 {
-    int n = ssl_read((SSL *)ctx, buf, len);   /* mapped, so the two constants
-                                               * need not agree */
+    int n = ssl_read(((WTransport *)ctx)->ssl, buf, len);   /* mapped, so the
+                                               * two constants need not agree */
     return n == SSL_READ_RESET ? BEP_READ_RESET : n;
 }
 
 static int w_write(void *ctx, const void *buf, int len)
 {
-    return ssl_write((SSL *)ctx, buf, len);
+    WTransport          *t     = (WTransport *)ctx;
+    const unsigned char *p     = (const unsigned char *)buf;
+    int                  sent  = 0;
+    int64_t              start = now_seconds();
+    int64_t              took;
+
+    while (sent < len) {
+        int           n     = len - sent;
+        unsigned long got   = 0;
+        int           ready;
+
+        if (n > WORKER_SEND_CHUNK)
+            n = WORKER_SEND_CHUNK;
+        ready = net_wait_writable(t->sock, WORKER_SEND_SECS, WORKER_SIG_STOP,
+                                  &got);
+        if (got & WORKER_SIG_STOP)
+            return -1;                  /* reported, not consumed */
+        if (ready != 1) {
+            log_printf(LOG_WARN, "worker: send of %d bytes made no progress "
+                       "for %d s; dropping the connection", len,
+                       WORKER_SEND_SECS);
+            return -1;
+        }
+        n = ssl_write(t->ssl, p + sent, n);
+        if (n <= 0)
+            return -1;
+        sent += n;
+    }
+    took = now_seconds() - start;
+    if (took >= WORKER_SLOW_SEND_SECS)
+        log_printf(LOG_WARN, "worker: send of %d bytes took %ld s", len,
+                   (long)took);
+    return sent;
 }
 
 /* True if 'id' matches any peer in the configured list. */
@@ -2915,6 +2961,7 @@ static int worker_run(WorkerStartup *st)
     SSL     *ssl      = NULL;
     BepConn *conn     = NULL;
     Sync    *S        = NULL;
+    WTransport wt;
     int      sock     = NET_INVALID_SOCKET;
     int      ssl_up   = 0;
     int      rc       = 1;
@@ -3066,7 +3113,9 @@ static int worker_run(WorkerStartup *st)
         log_printf(LOG_ERROR, "worker: out of memory for BepConn buffers");
         goto done;
     }
-    conn->t.ctx   = ssl;
+    wt.ssl        = ssl;
+    wt.sock       = sock;
+    conn->t.ctx   = &wt;
     conn->t.read  = w_read;
     conn->t.write = w_write;
 
