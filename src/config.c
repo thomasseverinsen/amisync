@@ -30,6 +30,7 @@ void config_defaults(Config *cfg)
     strcpy(cfg->device_name, "amisync");
     cfg->listen_port = CONFIG_DEFAULT_PORT;
     cfg->discovery   = 1;
+    cfg->max_send_kb = 0;
     cfg->serial_log  = 0;
     cfg->appicon     = 1;
     cfg->versioning  = 0;
@@ -313,6 +314,8 @@ static void apply_setting(Config *cfg, const char *key, const char *value)
         cfg->listen_port = (unsigned short)atoi(value);
     } else if (ci_equal(key, "discovery")) {
         cfg->discovery = parse_bool(value);
+    } else if (ci_equal(key, "maxsend")) {
+        cfg->max_send_kb = atoi(value) > 0 ? atoi(value) : 0;
     } else if (ci_equal(key, "seriallog")) {
         cfg->serial_log = parse_bool(value);
     } else if (ci_equal(key, "appicon")) {

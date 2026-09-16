@@ -85,6 +85,7 @@ static void test_defaults(void)
     ok("default loglevel",    cfg.log_level == LOG_INFO);
     ok("default listenport",  cfg.listen_port == CONFIG_DEFAULT_PORT);
     ok("default discovery",   cfg.discovery == 1);
+    ok("default maxsend",     cfg.max_send_kb == 0);
     ok("default seriallog",   cfg.serial_log == 0);
     ok("default appicon on",  cfg.appicon == 1);
     ok("default versioning off", cfg.versioning == 0);
@@ -150,6 +151,8 @@ static void test_loglevel(void)
 static void test_bools(void)
 {
     Config cfg;
+    load(&cfg, "maxsend = 200\n");    ok("maxsend 200", cfg.max_send_kb == 200);
+    load(&cfg, "maxsend = -5\n");     ok("maxsend neg", cfg.max_send_kb == 0);
     load(&cfg, "discovery = yes\n");   ok("bool yes",   cfg.discovery == 1);
     load(&cfg, "discovery = true\n");  ok("bool true",  cfg.discovery == 1);
     load(&cfg, "discovery = 1\n");     ok("bool 1",     cfg.discovery == 1);

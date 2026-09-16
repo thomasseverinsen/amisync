@@ -110,6 +110,7 @@ typedef struct {
     char device_name[CONFIG_NAME_MAX];   /* this node's BEP device name   */
     unsigned short listen_port;          /* inbound BEP port (0 = none)   */
     int  discovery;                      /* 1 = broadcast local discovery */
+    int  max_send_kb;                    /* outgoing rate limit, KB/s (0 = unlimited) */
     int  serial_log;                     /* 1 = tee the log to the serial
                                             debug port (WinUAE/kprintf)   */
     int  appicon;                        /* 1 = status AppIcon on the WB

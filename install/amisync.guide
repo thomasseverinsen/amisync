@@ -291,6 +291,7 @@ See the installed amisync.conf.example for a fully annotated template.
 @{b}Networking@{ub}
    listenport = 22000            inbound BEP port (0 = dial only)
    discovery  = yes              local discovery on UDP 21027
+   maxsend    = 0                outgoing rate limit, KB/s (0 = unlimited)
 
 @{b}Safety@{ub}
    versioning = no               keep replaced/deleted files

@@ -86,12 +86,41 @@ static void scopy(char *dst, const char *src, int cap)
 
 /* ---- BEP transport bound to an SSL session -------------------------- */
 
+/* With max_send_kb set, 'due' is the earliest tick the next record may go,
+ * pushed on by each record's share of the rate. Waits are Delay()s, so the
+ * granularity is one tick. */
 typedef struct {
-    SSL *ssl;
-    int  sock;
+    SSL    *ssl;
+    int     sock;
+    long    pace_bps;    /* bytes per second, 0 = unlimited */
+    int64_t due;
 } WTransport;
 
 static int64_t now_seconds(void);
+
+static int64_t now_ticks(void)
+{
+    struct DateStamp ds;
+
+    DateStamp(&ds);
+    return ((int64_t)ds.ds_Days * 86400 + (int64_t)ds.ds_Minute * 60) *
+           TICKS_PER_SECOND + ds.ds_Tick;
+}
+
+static void pace_before(WTransport *t)
+{
+    int64_t now = now_ticks();
+
+    if (t->due > now)
+        Delay((ULONG)(t->due - now));
+    else
+        t->due = now;
+}
+
+static void pace_after(WTransport *t, int n)
+{
+    t->due += ((int64_t)n * TICKS_PER_SECOND + t->pace_bps - 1) / t->pace_bps;
+}
 
 static int w_read(void *ctx, void *buf, int len)
 {
@@ -115,6 +144,8 @@ static int w_write(void *ctx, const void *buf, int len)
 
         if (n > WORKER_SEND_CHUNK)
             n = WORKER_SEND_CHUNK;
+        if (t->pace_bps)
+            pace_before(t);
         ready = net_wait_writable(t->sock, WORKER_SEND_SECS, WORKER_SIG_STOP,
                                   &got);
         if (got & WORKER_SIG_STOP)
@@ -128,6 +159,8 @@ static int w_write(void *ctx, const void *buf, int len)
         n = ssl_write(t->ssl, p + sent, n);
         if (n <= 0)
             return -1;
+        if (t->pace_bps)
+            pace_after(t, n);
         sent += n;
     }
     took = now_seconds() - start;
@@ -3115,6 +3148,11 @@ static int worker_run(WorkerStartup *st)
     }
     wt.ssl        = ssl;
     wt.sock       = sock;
+    wt.pace_bps   = st->cfg ? (long)st->cfg->max_send_kb * 1024 : 0;
+    wt.due        = 0;
+    if (wt.pace_bps)
+        log_printf(LOG_INFO, "worker: outgoing rate limit %d KB/s",
+                   st->cfg->max_send_kb);
     conn->t.ctx   = &wt;
     conn->t.read  = w_read;
     conn->t.write = w_write;

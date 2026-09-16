@@ -114,6 +114,9 @@ listenport = 22000
 ; ("Add Discovered...") or ARexx ADDPEER, which appends a peer line below.
 discovery  = yes
 
+; Outgoing rate limit in KB per second (default: 0 = unlimited).
+maxsend    = 0
+
 ; ---------------------------------------------------------------------------
 ; Peers - one line per trusted device we sync with. Format:
 ;   peer = <device-id> [<host>[:<port>]]
