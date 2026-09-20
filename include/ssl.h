@@ -103,6 +103,8 @@ int ssl_get_alpn(SSL *ssl, char *buf, int cap);
  * all-or-nothing (partial writes are not enabled): it returns 'len' or -1. */
 int ssl_read(SSL *ssl, void *buf, int len);
 int ssl_write(SSL *ssl, const void *buf, int len);
+/* Same; on failure *sslerr gets SSL_get_error and *err the socket errno. */
+int ssl_write_why(SSL *ssl, const void *buf, int len, int *sslerr, int *err);
 
 /* True if the TLS layer already holds received data (decrypted or raw) that a
  * socket-level select/WaitSelect cannot see. Check before blocking in a wait:

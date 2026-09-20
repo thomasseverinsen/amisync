@@ -110,6 +110,8 @@ typedef struct {
     char device_name[CONFIG_NAME_MAX];   /* this node's BEP device name   */
     unsigned short listen_port;          /* inbound BEP port (0 = none)   */
     int  discovery;                      /* 1 = broadcast local discovery */
+    int  compression;                    /* 1 = LZ4 outgoing metadata (default) */
+    int  compression_set;                /* 1 = the config said so explicitly  */
     int  max_send_kb;                    /* outgoing rate limit, KB/s (0 = unlimited) */
     int  serial_log;                     /* 1 = tee the log to the serial
                                             debug port (WinUAE/kprintf)   */

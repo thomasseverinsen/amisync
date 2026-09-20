@@ -909,6 +909,7 @@ int bep_index_iter_next(BepIndexIter *it, BepFileInfo *fi)
 
 int bep_conn_init(BepConn *c)
 {
+    c->compress = 1;
     c->wire_cap  = BEP_WIRE_INIT;
     c->plain_cap = BEP_PLAIN_INIT;
     c->out_cap   = BEP_OUT_INIT;
@@ -1153,9 +1154,12 @@ int bep_send_message(BepConn *c, int type, const void *msg, int msglen)
     /* Policy lives in bep.h; the wire detail is here. Syncthing's framing is
      * [uint32 BE uncompressed size][lz4 block], and compression is per-message
      * (the peer decompresses on the Header's flag, as bep_read_message does),
-     * so no Hello negotiation is needed. c->plain is the scratch - idle on the
-     * send path, since a worker never sends and reads at the same time. */
-    if (msglen >= BEP_COMPRESS_MIN && type != BEP_RESPONSE &&
+     * so no Hello negotiation is needed. c->plain is the scratch, unless a
+     * handler is still reading an inbound body there: then send plain. */
+    if (c->in_handler && c->body_in_plain && c->compress &&
+        msglen >= BEP_COMPRESS_MIN && type != BEP_RESPONSE)
+        c->plain_skips++;
+    else if (c->compress && msglen >= BEP_COMPRESS_MIN && type != BEP_RESPONSE &&
         ensure_plain(c, msglen + 4)) {
         /* Worst case LZ4 does not shrink at all, so the scratch must hold the
          * whole body; if it cannot be grown we simply send uncompressed. */
@@ -1349,9 +1353,11 @@ int bep_read_message(BepConn *c, BepHeader *hdr,
                             "declared (%d compressed)", dec, usize, mlen);
         *body    = c->plain;
         *bodylen = usize;
+        c->body_in_plain = 1;
     } else {
         *body    = c->wire;
         *bodylen = mlen;
+        c->body_in_plain = 0;
     }
     return 1;
 }

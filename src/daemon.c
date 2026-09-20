@@ -71,10 +71,6 @@ static int locale_utc_offset_s(int *found)
 static unsigned long mb_whole(ULONG v) { return (unsigned long)(v >> 20); }
 static unsigned long mb_tenth(ULONG v) { return (unsigned long)(((v & 0xFFFFFUL) * 10) >> 20); }
 
-/* What this is running on, including whether the CPU is Emu68 (it exposes
- * devicetree.resource and behaves like no real 68k). Doubles as the TCP/IP
- * stack probe: one warning here rather than every worker failing later.
- * Non-fatal; a stack started afterwards is picked up on the next dial. */
 /* Copy a library's free-form, usually multi-line ID string as one line. */
 static void flatten_id(char *out, int cap, const char *id)
 {
@@ -89,6 +85,15 @@ static void flatten_id(char *out, int cap, const char *id)
     out[n] = '\0';
 }
 
+/* Emu68 exposes devicetree.resource; no real 68k does. */
+static int under_emu68(void)
+{
+    return OpenResource((STRPTR)"devicetree.resource") != NULL;
+}
+
+/* What this is running on. Doubles as the TCP/IP stack probe: one warning
+ * here rather than every worker failing later. Non-fatal; a stack started
+ * afterwards is picked up on the next dial. */
 static void log_platform(void)
 {
     struct ExecBase *eb  = (struct ExecBase *)SysBase;
@@ -97,7 +102,7 @@ static void log_platform(void)
                            (af & AFF_68030) ? "68030" : (af & AFF_68020) ? "68020" :
                            (af & AFF_68010) ? "68010" : "68000";
     const char      *fpu = (af & (AFF_68881 | AFF_68882 | AFF_FPU40)) ? "+FPU" : "";
-    const char      *emu = OpenResource((STRPTR)"devicetree.resource") ? " under Emu68" : "";
+    const char      *emu = under_emu68() ? " under Emu68" : "";
     struct Library  *sb  = OpenLibrary((STRPTR)"bsdsocket.library", 4);
     char             stack[80] = "none";
     ULONG            chip = AvailMem(MEMF_CHIP), fast = AvailMem(MEMF_FAST);
@@ -792,6 +797,7 @@ int daemon_run(Config *cfg)
     {
         int offs = cfg->tz_offset_s, found = cfg->tz_offset_set;
         const char *src = "tzoffset";
+        const char *dst = "";
 
         /* Locale prefs are the default answer: it is where this machine
          * already says what time zone it keeps, and asking twice would be
@@ -803,6 +809,7 @@ int daemon_run(Config *cfg)
         if (!cfg->tz_offset_set) {
             offs = locale_utc_offset_s(&found);
             src  = "locale.library";
+            dst  = "; Locale has no summer time, set tzoffset if that is off";
             if (!found && cfg->tz_from_locale)
                 log_printf(LOG_WARN, "daemon: tzoffset = locale, but Locale "
                            "prefs have no time zone set - times stay UTC");
@@ -811,13 +818,19 @@ int daemon_run(Config *cfg)
         if (offs) {
             int m = offs / 60, a = m < 0 ? -m : m;
             log_printf(LOG_INFO, "daemon: clock is local time, UTC%c%02d:%02d "
-                       "(from %s)", m < 0 ? '-' : '+', a / 60, a % 60, src);
+                       "(from %s%s)", m < 0 ? '-' : '+', a / 60, a % 60, src, dst);
         } else if (found) {
-            log_printf(LOG_INFO, "daemon: clock keeps UTC (from %s)", src);
+            log_printf(LOG_INFO, "daemon: clock keeps UTC (from %s%s)", src, dst);
         }
     }
 
     log_platform();                 /* also the TCP/IP stack probe */
+
+    if (!cfg->compression_set && under_emu68()) {
+        cfg->compression = 0;
+        log_printf(LOG_INFO, "daemon: compression off under Emu68 "
+                   "(compression = metadata overrides)");
+    }
 
     /* Open the shared AmiSSL instance once, here in the main process, before any
      * networking subprocess is spawned. Each worker/discovery subprocess binds

@@ -441,9 +441,16 @@ int ssl_read(SSL *ssl, void *buf, int len)
 
 int ssl_write(SSL *ssl, const void *buf, int len)
 {
+    return ssl_write_why(ssl, buf, len, NULL, NULL);
+}
+
+int ssl_write_why(SSL *ssl, const void *buf, int len, int *sslerr, int *err)
+{
     int n = SSL_write(ssl, buf, len);
     if (n > 0)
         return n;
+    if (sslerr) *sslerr = SSL_get_error(ssl, n);
+    if (err)    *err    = errno;
     SSLDIAG("ssl_write: n=%d SSL_get_error=%d errno=%d ossl=0x%08lx",
             n, SSL_get_error(ssl, n), errno,
             (unsigned long)ERR_peek_last_error());

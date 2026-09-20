@@ -166,6 +166,12 @@ typedef struct {
      * meaningful immediately after a read returned <= 0. */
     char           last_err[96];
     int            last_reset;
+    int            compress;     /* LZ4 outgoing metadata (default on) */
+    /* 'plain' doubles as the LZ4 scratch on send. While a handler still reads
+     * an inbound body that lives there, a send must leave it alone. */
+    int            body_in_plain; /* the last body read is in 'plain'       */
+    int            in_handler;    /* set by the caller around its dispatch  */
+    int            plain_skips;   /* sends left uncompressed for that reason */
 } BepConn;
 
 /* Allocate the three scratch buffers at BEP_MSG_INIT. Call once after zeroing

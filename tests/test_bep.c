@@ -324,6 +324,53 @@ static void test_framed_transport(void)
                                strcmp(cc.folders[0].id, "photos") == 0);
     }
 
+    /* Compression follows the connection's switch. */
+    {
+        BepClusterConfig *big = calloc(1, sizeof(*big));
+        int k, pass;
+        big->num_folders = BEP_MAX_FOLDERS;
+        for (k = 0; k < BEP_MAX_FOLDERS; k++) {
+            sprintf(big->folders[k].id, "a-long-and-repetitive-folder-id-%02d", k);
+            sprintf(big->folders[k].label, "a long and repetitive label %02d", k);
+        }
+        for (pass = 0; pass < 2; pass++) {
+            tx->compress = !pass;
+            ok("send big cc", bep_send_cluster_config(tx, big));
+            ok("read big cc", bep_read_message(rx, &hdr, &body, &bodylen) == 1);
+            ok(pass ? "switch off: sent plain" : "switch on: sent LZ4",
+               hdr.compression == (pass ? BEP_COMPRESS_NONE : BEP_COMPRESS_LZ4));
+            ok("big cc body intact", bodylen > 1024);
+        }
+        tx->compress = 1;
+
+        /* A send from inside a handler must not overwrite the compressed
+         * inbound body that handler is still reading: both live in 'plain'.
+         * 'rx' reads a compressed message, then sends one of its own. */
+        {
+            unsigned char *copy;
+            int            same;
+
+            ok("send big cc to rx", bep_send_cluster_config(tx, big));
+            ok("rx reads it", bep_read_message(rx, &hdr, &body, &bodylen) == 1);
+            ok("it arrived compressed", hdr.compression == BEP_COMPRESS_LZ4 &&
+                                        rx->body_in_plain);
+            copy = malloc((size_t)bodylen);
+            memcpy(copy, body, (size_t)bodylen);
+
+            rx->in_handler = 1;
+            ok("rx sends mid-handler", bep_send_cluster_config(rx, big));
+            same = memcmp(copy, body, (size_t)bodylen) == 0;
+            ok("inbound body survives a send from its handler", same);
+            ok("and the send was counted", rx->plain_skips == 1);
+            rx->in_handler = 0;
+            free(copy);
+
+            ok("tx reads rx's message", bep_read_message(tx, &hdr, &body, &bodylen) == 1);
+            ok("which went out plain", hdr.compression == BEP_COMPRESS_NONE);
+        }
+        free(big);
+    }
+
     /* Real Syncthing (proto3) omits zero-valued Header fields, so a ClusterConfig
      * with no compression arrives with headerLen==0. Hand-frame that and confirm
      * we decode it as the all-defaults Header instead of treating it as junk. */

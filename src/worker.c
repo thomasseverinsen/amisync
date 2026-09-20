@@ -67,11 +67,11 @@ typedef char bep_counters_hold_peers[BEP_MAX_COUNTERS >= CONFIG_MAX_PEERS ? 1 : 
  * that the table cannot be pinned shut. */
 #define WORKER_HELLO_SECS  20
 
-/* Wait, bounded, for the socket before each send, so a stalled link fails
- * the send instead of holding the worker forever. One TLS record per wait,
- * so a stall between records is caught too. */
+/* Wait, bounded, for the socket before each message, so a stalled link fails
+ * the send instead of holding the worker forever. Once per message, not per
+ * record: on some stacks the wait is a round trip to another process. */
 #define WORKER_SEND_SECS      120
-#define WORKER_SEND_CHUNK   16384
+#define WORKER_PACE_CHUNK   16384   /* paced sends go out a record at a time */
 #define WORKER_SLOW_SEND_SECS   5   /* log a send that took longer than this */
 
 /* Length-bounded copy that always NUL-terminates. */
@@ -136,29 +136,32 @@ static int w_write(void *ctx, const void *buf, int len)
     int                  sent  = 0;
     int64_t              start = now_seconds();
     int64_t              took;
+    unsigned long        got   = 0;
+
+    if (net_wait_writable(t->sock, WORKER_SEND_SECS, WORKER_SIG_STOP,
+                          &got) != 1 && !(got & WORKER_SIG_STOP)) {
+        log_printf(LOG_WARN, "worker: socket took no data for %d s; dropping "
+                   "the connection", WORKER_SEND_SECS);
+        return -1;
+    }
+    if (got & WORKER_SIG_STOP)
+        return -1;                      /* reported, not consumed */
 
     while (sent < len) {
-        int           n     = len - sent;
-        unsigned long got   = 0;
-        int           ready;
+        int n      = len - sent;
+        int sslerr = 0, err = 0;
 
-        if (n > WORKER_SEND_CHUNK)
-            n = WORKER_SEND_CHUNK;
-        if (t->pace_bps)
+        if (t->pace_bps) {
+            if (n > WORKER_PACE_CHUNK)
+                n = WORKER_PACE_CHUNK;
             pace_before(t);
-        ready = net_wait_writable(t->sock, WORKER_SEND_SECS, WORKER_SIG_STOP,
-                                  &got);
-        if (got & WORKER_SIG_STOP)
-            return -1;                  /* reported, not consumed */
-        if (ready != 1) {
-            log_printf(LOG_WARN, "worker: send of %d bytes made no progress "
-                       "for %d s; dropping the connection", len,
-                       WORKER_SEND_SECS);
+        }
+        n = ssl_write_why(t->ssl, p + sent, n, &sslerr, &err);
+        if (n <= 0) {
+            log_printf(LOG_WARN, "worker: send failed after %d of %d bytes "
+                       "(ssl %d, errno %d)", sent, len, sslerr, err);
             return -1;
         }
-        n = ssl_write(t->ssl, p + sent, n);
-        if (n <= 0)
-            return -1;
         if (t->pace_bps)
             pace_after(t, n);
         sent += n;
@@ -2943,6 +2946,7 @@ static int worker_sync(Sync *S)
                 return 1;
             }
 
+            S->conn->in_handler = 1;       /* 'body' is live until the break */
             switch (hdr.type) {
             case BEP_REQUEST:
                 if (!serve_request(S, body, blen))
@@ -2965,6 +2969,7 @@ static int worker_sync(Sync *S)
             default:
                 break;
             }
+            S->conn->in_handler = 0;
         }
     }
 }
@@ -3154,6 +3159,7 @@ static int worker_run(WorkerStartup *st)
         log_printf(LOG_INFO, "worker: outgoing rate limit %d KB/s",
                    st->cfg->max_send_kb);
     conn->t.ctx   = &wt;
+    conn->compress = st->cfg ? st->cfg->compression : 1;
     conn->t.read  = w_read;
     conn->t.write = w_write;
 
@@ -3274,6 +3280,10 @@ static int worker_run(WorkerStartup *st)
     wreg_remove();
 
 done:
+    if (conn)
+        log_printf(conn->plain_skips ? LOG_INFO : LOG_DEBUG,
+                   "worker: %d send(s) left uncompressed to spare an inbound "
+                   "message", conn->plain_skips);
     if (st->peer_cfg)                  /* what this session leaves owing */
         st->peer_cfg->resyncing = st->connected ? st->resync : 0;
     if (st->peer_cfg && st->peer_cfg->inbound_st == (void *)st) {
