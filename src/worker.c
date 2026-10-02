@@ -2662,6 +2662,21 @@ static void refresh_ignores(Sync *S)
     }
 }
 
+/* Will the peer send an Index for this folder? Syncthing sends none for a
+ * folder whose own max_sequence is 0 (empty), since it flushes only non-empty
+ * batches. A peer we cannot identify is assumed to send one. */
+static int index_coming(const Sync *S, const BepFolder *f)
+{
+    int d;
+
+    if (!S->have_peer_raw)
+        return 1;
+    for (d = 0; d < f->num_devices; d++)
+        if (memcmp(f->devices[d].id, S->peer_raw, 32) == 0)
+            return f->devices[d].max_sequence > 0;
+    return 1;
+}
+
 /* The peer's ClusterConfig: rebuild the mutual-share map and refresh what it
  * is offering us. A folder TRANSITIONING to shared restarts its announce from
  * zero - the peer just (re)accepted it and expects the full index. The message
@@ -2674,7 +2689,7 @@ static void handle_cluster_config(Sync *S, const unsigned char *body, int blen)
 {
     BepClusterConfig cc;
     unsigned char    now[CONFIG_MAX_FOLDERS];
-    int              i;
+    int              i, coming;
 
     if (!bep_decode_cluster_config(body, blen, &cc))
         return;
@@ -2683,18 +2698,23 @@ static void handle_cluster_config(Sync *S, const unsigned char *body, int blen)
                cc.num_folders);
 
     memset(now, 0, sizeof(now));
+    coming = 0;
     offered_begin(S->st->peer_actual_id);
     for (i = 0; i < cc.num_folders; i++) {
         int fx = sync_folder_index(S->cfg, cc.folders[i].id);
-        if (fx >= 0 && fx < CONFIG_MAX_FOLDERS)
+        if (fx >= 0 && fx < CONFIG_MAX_FOLDERS) {
             now[fx] = 1;
-        else if (fx < 0)
+            if (index_coming(S, &cc.folders[i]))
+                coming = 1;
+        } else if (fx < 0)
             /* a folder we have no config for: the peer is offering it
              * (Syncthing's "wants to share") */
             offered_note(S->st->peer_actual_id, S->st->peer_name,
                          cc.folders[i].id, cc.folders[i].label);
     }
     offered_end(S->st->peer_actual_id);
+    if (!coming)
+        S->st->indexed = 1;            /* nothing to wait for */
 
     for (i = 0; i < CONFIG_MAX_FOLDERS; i++) {
         if (now[i] && !S->peer_shares[i]) {
@@ -2924,6 +2944,7 @@ static int worker_sync(Sync *S)
             return 1;
         }
         if (w == 0) {                          /* idle timeout: keepalive */
+            S->st->indexed = 1;    /* a paused folder's Index never comes */
             if (!bep_send_ping(S->conn))
                 return 1;
             refresh_ignores(S);

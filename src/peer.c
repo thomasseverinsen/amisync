@@ -212,6 +212,19 @@ static int slot_resyncing(const PeerSlot *s)
     return s->cfg->resyncing;
 }
 
+/* Connected, but the peer has not sent an Index yet: its backlog of 0 means
+ * nothing so far. */
+static int slot_unheard(const PeerSlot *s)
+{
+    const WorkerStartup *st = NULL;
+
+    if (s->startup && s->startup->connected)
+        st = s->startup;
+    else if (s->cfg->inbound_st && s->cfg->inbound_st->connected)
+        st = (const WorkerStartup *)s->cfg->inbound_st;
+    return st && !st->indexed;
+}
+
 /* May this slot be dialled right now? The precondition every dial decision
  * shares: an address to dial, no worker already running, a peer that is
  * neither paused nor removed, and a daemon that is not shutting down. */
@@ -538,7 +551,7 @@ void peer_manager_status(PeerManager *pm, char *out, int cap,
                  * "Up to Date" while a file is missing. */
                 if (ip > pending)
                     pending = ip;
-                if (ip == 0 && slot_resyncing(s))
+                if (ip == 0 && (slot_resyncing(s) || slot_unheard(s)))
                     resyncing++;               /* drained, but not finished */
             } else if (slot_resyncing(s)) {
                 /* Counts as up, deliberately: the worker closed the session
