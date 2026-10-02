@@ -21,6 +21,7 @@
 #define CONFIG_FOLDER_ID_MAX  64
 #define CONFIG_MAX_PEERS      16
 #define CONFIG_MAX_FOLDERS     8
+#define CONFIG_MAX_WINDOW      4   /* most block Requests in flight */
 #define CONFIG_DEFAULT_PORT   22000   /* Syncthing's default BEP TCP port */
 
 /* A configured peer: its device ID (for pinning) and where to dial it.
@@ -114,6 +115,7 @@ typedef struct {
     int  compression_set;                /* 1 = the config said so explicitly  */
     int  max_send_kb;                    /* outgoing rate limit, KB/s (0 = unlimited) */
     int  sock_buf_kb;                    /* socket buffers, KB (0 = stack default) */
+    int  window;                         /* block Requests in flight, 1..CONFIG_MAX_WINDOW */
     int  serial_log;                     /* 1 = tee the log to the serial
                                             debug port (WinUAE/kprintf)   */
     int  appicon;                        /* 1 = status AppIcon on the WB

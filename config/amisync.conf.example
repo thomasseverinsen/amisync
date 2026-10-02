@@ -120,6 +120,9 @@ maxsend    = 0
 ; Socket buffer size in KB (default: 256). 0 leaves the TCP/IP stack's own.
 ;sockbuf    = 256
 
+; Block requests kept in flight while downloading, 1-4 (default: 4).
+;window     = 4
+
 ; Compress outgoing metadata with LZ4 (metadata | never). File data is never
 ; compressed. Default: metadata, matching Syncthing - except under Emu68,
 ; where it is never unless set here.

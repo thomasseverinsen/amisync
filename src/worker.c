@@ -328,7 +328,7 @@ static void build_cluster_config(const Config *cfg, FolderState *folders,
 #define WK_MAX_KEPT         32   /* contested names tracked per folder          */
 #define WK_MAX_GONE        256   /* names a peer deleted while we had them parked */
 #define DEFER_DONE        0xFF   /* defer_tries marker: settled, drop the entry */
-#define WK_WINDOW            4   /* block Requests kept in flight (pipelining)  */
+#define WK_WINDOW  CONFIG_MAX_WINDOW /* block Requests kept in flight (pipelining) */
 #define WK_STAGE   (WK_WINDOW - 1)   /* blocks held that arrived ahead of their turn */
 /* FileInfo entries packed into one Index/IndexUpdate. The real limit is the
  * send buffer (a batch stops early when the next entry will not fit), so this
@@ -2582,7 +2582,7 @@ static int progress(Sync *S)
             continue;                          /* try the next queued file */
         }
 
-        while (S->dl.num_inflight < WK_WINDOW) {
+        while (S->dl.num_inflight < S->cfg->window) {
             if (S->dl.num_redo > 0) {
                 Inflight r = S->dl.redo[--S->dl.num_redo];
                 if (!send_block_request(S, r.block, r.retries))
@@ -3190,6 +3190,9 @@ static int worker_run(WorkerStartup *st)
                    st->cfg->max_send_kb);
     if (st->cfg && st->cfg->sock_buf_kb == 0)
         log_printf(LOG_INFO, "worker: socket buffers left at the stack default");
+    if (st->cfg && st->cfg->window < CONFIG_MAX_WINDOW)
+        log_printf(LOG_INFO, "worker: %d block request(s) in flight",
+                   st->cfg->window);
     conn->t.ctx   = &wt;
     conn->compress = st->cfg ? st->cfg->compression : 1;
     conn->t.read  = w_read;

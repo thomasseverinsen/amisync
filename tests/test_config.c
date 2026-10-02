@@ -87,6 +87,7 @@ static void test_defaults(void)
     ok("default discovery",   cfg.discovery == 1);
     ok("default maxsend",     cfg.max_send_kb == 0);
     ok("default sockbuf",     cfg.sock_buf_kb == 256);
+    ok("default window",      cfg.window == 4);
     ok("default compression", cfg.compression == 1 && !cfg.compression_set);
     ok("default seriallog",   cfg.serial_log == 0);
     ok("default appicon on",  cfg.appicon == 1);
@@ -163,6 +164,9 @@ static void test_bools(void)
     load(&cfg, "maxsend = -5\n");     ok("maxsend neg", cfg.max_send_kb == 0);
     load(&cfg, "sockbuf = 0\n");      ok("sockbuf 0",   cfg.sock_buf_kb == 0);
     load(&cfg, "sockbuf = 64\n");     ok("sockbuf 64",  cfg.sock_buf_kb == 64);
+    load(&cfg, "window = 1\n");       ok("window 1",    cfg.window == 1);
+    load(&cfg, "window = 0\n");       ok("window 0",    cfg.window == 1);
+    load(&cfg, "window = 9\n");       ok("window 9",    cfg.window == 4);
     load(&cfg, "discovery = yes\n");   ok("bool yes",   cfg.discovery == 1);
     load(&cfg, "discovery = true\n");  ok("bool true",  cfg.discovery == 1);
     load(&cfg, "discovery = 1\n");     ok("bool 1",     cfg.discovery == 1);

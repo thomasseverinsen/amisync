@@ -293,6 +293,7 @@ See the installed amisync.conf.example for a fully annotated template.
    discovery  = yes              local discovery on UDP 21027
    maxsend    = 0                outgoing rate limit, KB/s (0 = unlimited)
    sockbuf    = 256              socket buffers, KB (0 = stack default)
+   window     = 4                block requests in flight, 1-4
    compression = metadata        metadata | never (never under Emu68)
 
 @{b}Safety@{ub}
@@ -381,6 +382,12 @@ host and port.
 Something else holds the discovery port (e.g. another Syncthing on the
 same machine, under emulation). Discovery send still works; only receive
 is affected.
+
+@{b}Transfers keep dropping, or the network stalls.@{ub}
+Some network drivers fail under sustained two-way traffic. The log names
+each failure ("receive failed" or "send failed"). Try smaller bursts, one
+step at a time: @{b}sockbuf = 0@{ub}, then @{b}window = 1@{ub}
+for downloads, then @{b}maxsend@{ub} (e.g. 300) for uploads.
 
 @{b}A file will not sync.@{ub}
 Very long names can exceed what FFS stores (30 characters per component);
