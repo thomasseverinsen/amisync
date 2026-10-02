@@ -92,16 +92,20 @@ int ssl_get_alpn(SSL *ssl, char *buf, int cap);
 
 /* ---- session I/O ----------------------------------------------- */
 
-/* ssl_read's return for "the connection was torn down under us": the peer
+/* ssl_read_why's return for "the connection was torn down under us": the peer
  * reset it, or it died without a TLS close_notify. Distinct from -1, which
  * the caller has to treat as a fault worth reporting. */
 #define SSL_READ_RESET  (-2)
 
-/* Blocking read/write over the TLS session. ssl_read returns the number of
- * bytes read (>0), 0 on a clean peer shutdown, SSL_READ_RESET when the
- * connection was torn down under us, or -1 on any other error. ssl_write is
- * all-or-nothing (partial writes are not enabled): it returns 'len' or -1. */
-int ssl_read(SSL *ssl, void *buf, int len);
+/* Blocking read/write over the TLS session. ssl_read_why returns the number
+ * of bytes read (>0), 0 on a clean peer shutdown, SSL_READ_RESET when the
+ * connection was torn down under us, or -1 on any other error, with
+ * SSL_get_error in *sslerr, the socket errno in *err and OpenSSL's last error
+ * code in *reason (a stop signal sets only *sslerr, to WANT_READ/WRITE).
+ * ssl_write is all-or-nothing (partial writes are not enabled): it returns
+ * 'len' or -1. */
+int ssl_read_why(SSL *ssl, void *buf, int len, int *sslerr, int *err,
+                 unsigned long *reason);
 int ssl_write(SSL *ssl, const void *buf, int len);
 /* Same; on failure *sslerr gets SSL_get_error and *err the socket errno. */
 int ssl_write_why(SSL *ssl, const void *buf, int len, int *sslerr, int *err);

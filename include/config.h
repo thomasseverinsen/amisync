@@ -113,6 +113,7 @@ typedef struct {
     int  compression;                    /* 1 = LZ4 outgoing metadata (default) */
     int  compression_set;                /* 1 = the config said so explicitly  */
     int  max_send_kb;                    /* outgoing rate limit, KB/s (0 = unlimited) */
+    int  sock_buf_kb;                    /* socket buffers, KB (0 = stack default) */
     int  serial_log;                     /* 1 = tee the log to the serial
                                             debug port (WinUAE/kprintf)   */
     int  appicon;                        /* 1 = status AppIcon on the WB

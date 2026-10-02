@@ -32,6 +32,7 @@
 #include <openssl/crypto.h>
 #include <openssl/ssl.h>
 #include <openssl/sha.h>
+#include <openssl/err.h>
 
 #include <SDI_compiler.h>
 
@@ -43,7 +44,6 @@
 /* Transport diagnostics, switchable into a release build with -DBEP_DIAG (or
  * the Amiga debug build) to trace exactly why a read failed. Off by default. */
 #if defined(DEBUG) || defined(BEP_DIAG)
-#include <openssl/err.h>
 #include "log.h"
 #define SSLDIAG(...) log_printf(LOG_WARN, __VA_ARGS__)
 #else
@@ -386,7 +386,8 @@ int ssl_buffered(SSL *ssl)
     return SSL_has_pending(ssl) || SSL_pending(ssl) > 0;
 }
 
-int ssl_read(SSL *ssl, void *buf, int len)
+int ssl_read_why(SSL *ssl, void *buf, int len, int *sslerr, int *err,
+                 unsigned long *reason)
 {
     for (;;) {
         int n = SSL_read(ssl, buf, len);
@@ -415,12 +416,15 @@ int ssl_read(SSL *ssl, void *buf, int len)
              * the worker never exits, hanging the daemon's shutdown join.
              * Distinguish them by the signal, not the errno - SetSignal(0,0)
              * reads without consuming, so the worker's own loop still sees it. */
-            if (SetSignal(0L, 0L) & SIGBREAKF_CTRL_F)
+            if (SetSignal(0L, 0L) & SIGBREAKF_CTRL_F) {
+                *sslerr = e;
                 return -1;
+            }
             continue;
         default:
-            SSLDIAG("ssl_read: n=%d SSL_get_error=%d errno=%d ossl=0x%08lx",
-                    n, e, errno, (unsigned long)ERR_peek_last_error());
+            *sslerr = e;
+            *err    = errno;
+            *reason = ERR_peek_last_error();
             /* Only SSL_ERROR_SYSCALL may consult errno: it is the one error
              * where OpenSSL is saying the fault is below it. Nothing clears
              * errno before the read, so widening this to SSL_ERROR_SSL would

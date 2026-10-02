@@ -117,6 +117,9 @@ discovery  = yes
 ; Outgoing rate limit in KB per second (default: 0 = unlimited).
 maxsend    = 0
 
+; Socket buffer size in KB (default: 256). 0 leaves the TCP/IP stack's own.
+;sockbuf    = 256
+
 ; Compress outgoing metadata with LZ4 (metadata | never). File data is never
 ; compressed. Default: metadata, matching Syncthing - except under Emu68,
 ; where it is never unless set here.

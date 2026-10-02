@@ -124,8 +124,16 @@ static void pace_after(WTransport *t, int n)
 
 static int w_read(void *ctx, void *buf, int len)
 {
-    int n = ssl_read(((WTransport *)ctx)->ssl, buf, len);   /* mapped, so the
-                                               * two constants need not agree */
+    int           sslerr = 0, err = 0;
+    unsigned long reason = 0;
+    int           n = ssl_read_why(((WTransport *)ctx)->ssl, buf, len,
+                                   &sslerr, &err, &reason);
+
+    if (n == -1 && sslerr != SSL_ERROR_WANT_READ &&
+        sslerr != SSL_ERROR_WANT_WRITE)         /* those two are a stop */
+        log_printf(LOG_WARN, "worker: receive failed (ssl %d, errno %d, "
+                   "reason 0x%08lx)", sslerr, err, reason);
+    /* mapped, so the two constants need not agree */
     return n == SSL_READ_RESET ? BEP_READ_RESET : n;
 }
 
@@ -3079,7 +3087,8 @@ static int worker_run(WorkerStartup *st)
         goto done;
     }
     net_set_nodelay(sock);   /* latency over throughput for our request/response */
-    net_set_buffers(sock, 256 * 1024);   /* room for the pipelined block window */
+    if (st->cfg && st->cfg->sock_buf_kb)  /* room for the pipelined block window */
+        net_set_buffers(sock, st->cfg->sock_buf_kb * 1024);
 
     /* Inbound only: do not enter the TLS handshake until the peer has actually
      * said something. SSL_accept blocks with no timeout of its own, so a host
@@ -3158,6 +3167,8 @@ static int worker_run(WorkerStartup *st)
     if (wt.pace_bps)
         log_printf(LOG_INFO, "worker: outgoing rate limit %d KB/s",
                    st->cfg->max_send_kb);
+    if (st->cfg && st->cfg->sock_buf_kb == 0)
+        log_printf(LOG_INFO, "worker: socket buffers left at the stack default");
     conn->t.ctx   = &wt;
     conn->compress = st->cfg ? st->cfg->compression : 1;
     conn->t.read  = w_read;

@@ -31,6 +31,7 @@ void config_defaults(Config *cfg)
     cfg->listen_port = CONFIG_DEFAULT_PORT;
     cfg->discovery   = 1;
     cfg->max_send_kb = 0;
+    cfg->sock_buf_kb = 256;
     cfg->compression = 1;
     cfg->compression_set = 0;
     cfg->serial_log  = 0;
@@ -326,6 +327,8 @@ static void apply_setting(Config *cfg, const char *key, const char *value)
         }
     } else if (ci_equal(key, "maxsend")) {
         cfg->max_send_kb = atoi(value) > 0 ? atoi(value) : 0;
+    } else if (ci_equal(key, "sockbuf")) {
+        cfg->sock_buf_kb = atoi(value) > 0 ? atoi(value) : 0;
     } else if (ci_equal(key, "seriallog")) {
         cfg->serial_log = parse_bool(value);
     } else if (ci_equal(key, "appicon")) {

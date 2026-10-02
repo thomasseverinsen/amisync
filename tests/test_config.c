@@ -86,6 +86,7 @@ static void test_defaults(void)
     ok("default listenport",  cfg.listen_port == CONFIG_DEFAULT_PORT);
     ok("default discovery",   cfg.discovery == 1);
     ok("default maxsend",     cfg.max_send_kb == 0);
+    ok("default sockbuf",     cfg.sock_buf_kb == 256);
     ok("default compression", cfg.compression == 1 && !cfg.compression_set);
     ok("default seriallog",   cfg.serial_log == 0);
     ok("default appicon on",  cfg.appicon == 1);
@@ -160,6 +161,8 @@ static void test_bools(void)
     ok("compression bogus ignored", cfg.compression == 1 && !cfg.compression_set);
     load(&cfg, "maxsend = 200\n");    ok("maxsend 200", cfg.max_send_kb == 200);
     load(&cfg, "maxsend = -5\n");     ok("maxsend neg", cfg.max_send_kb == 0);
+    load(&cfg, "sockbuf = 0\n");      ok("sockbuf 0",   cfg.sock_buf_kb == 0);
+    load(&cfg, "sockbuf = 64\n");     ok("sockbuf 64",  cfg.sock_buf_kb == 64);
     load(&cfg, "discovery = yes\n");   ok("bool yes",   cfg.discovery == 1);
     load(&cfg, "discovery = true\n");  ok("bool true",  cfg.discovery == 1);
     load(&cfg, "discovery = 1\n");     ok("bool 1",     cfg.discovery == 1);
