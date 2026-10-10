@@ -117,8 +117,8 @@ discovery  = yes
 ; Outgoing rate limit in KB per second (default: 0 = unlimited).
 maxsend    = 0
 
-; Socket buffer size in KB (default: 256). 0 leaves the TCP/IP stack's own.
-;sockbuf    = 256
+; Socket buffer size in KB (default: 0 = the TCP/IP stack's own).
+;sockbuf    = 0
 
 ; Block requests kept in flight while downloading, 1-4 (default: 4).
 ;window     = 4

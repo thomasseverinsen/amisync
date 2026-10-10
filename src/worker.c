@@ -3188,8 +3188,9 @@ static int worker_run(WorkerStartup *st)
     if (wt.pace_bps)
         log_printf(LOG_INFO, "worker: outgoing rate limit %d KB/s",
                    st->cfg->max_send_kb);
-    if (st->cfg && st->cfg->sock_buf_kb == 0)
-        log_printf(LOG_INFO, "worker: socket buffers left at the stack default");
+    if (st->cfg && st->cfg->sock_buf_kb)
+        log_printf(LOG_INFO, "worker: socket buffers %d KB",
+                   st->cfg->sock_buf_kb);
     if (st->cfg && st->cfg->window < CONFIG_MAX_WINDOW)
         log_printf(LOG_INFO, "worker: %d block request(s) in flight",
                    st->cfg->window);

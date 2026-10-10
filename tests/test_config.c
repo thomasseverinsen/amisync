@@ -86,7 +86,7 @@ static void test_defaults(void)
     ok("default listenport",  cfg.listen_port == CONFIG_DEFAULT_PORT);
     ok("default discovery",   cfg.discovery == 1);
     ok("default maxsend",     cfg.max_send_kb == 0);
-    ok("default sockbuf",     cfg.sock_buf_kb == 256);
+    ok("default sockbuf",     cfg.sock_buf_kb == 0);
     ok("default window",      cfg.window == 4);
     ok("default compression", cfg.compression == 1 && !cfg.compression_set);
     ok("default seriallog",   cfg.serial_log == 0);

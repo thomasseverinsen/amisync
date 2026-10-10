@@ -31,7 +31,7 @@ void config_defaults(Config *cfg)
     cfg->listen_port = CONFIG_DEFAULT_PORT;
     cfg->discovery   = 1;
     cfg->max_send_kb = 0;
-    cfg->sock_buf_kb = 256;
+    cfg->sock_buf_kb = 0;
     cfg->window      = CONFIG_MAX_WINDOW;
     cfg->compression = 1;
     cfg->compression_set = 0;
