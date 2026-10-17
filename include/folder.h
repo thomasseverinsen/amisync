@@ -318,6 +318,11 @@ int64_t folder_now(void);
  * peer's later edit - only our own earlier records, which is the point. */
 uint64_t folder_version_stamp(int64_t modified_s);
 
+/* Before 0.10.2 names went to disk as raw UTF-8. Rename each component of
+ * 'name' still stored that way to its Latin-1 form (parents first), unless
+ * that form already exists. Returns the number of renames. */
+int folder_relocate_utf8(const char *path, const char *name);
+
 /* Is <path>/<name> still on disk? Answers the question a failed hash cannot:
  * a file we could not read may be held open by another program, or may have
  * been deleted while the scan walked past it, and only the second may be

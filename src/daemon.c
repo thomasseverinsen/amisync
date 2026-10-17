@@ -29,7 +29,7 @@
 #include "foldstate.h"
 #include "index_store.h"
 #include "folder.h"
-#include "pathsafe.h"      /* text_field_safe (untrusted ids/labels/paths) */
+#include "pathsafe.h"      /* text_field_safe, utf8_valid */
 #include "syncmodel.h"     /* sync_short_id_from_raw */
 #include "device_id.h"
 #include "version.h"      /* AMISYNC_DATE (the clock sanity floor) */
@@ -265,6 +265,32 @@ static void load_folder_index(const Config *cfg, FolderState *fs)
      * change. No lock needed: workers/scanner have not started yet. */
     fs->chg_verb = 0;
     fs->chg_name[0] = '\0';
+}
+
+/* Before 0.10.2 names were never mapped: received ones went to disk as raw
+ * UTF-8, scanned Latin-1 ones were indexed as is (invalid UTF-8). Move the
+ * first to their Latin-1 disk names, or the scan tombstones them; forget the
+ * second, and the scan re-adds them. Before the scanner and workers start. */
+static void migrate_names(const ConfigFolder *cf, FolderState *fs)
+{
+    char name[BEP_PATH_MAX];
+    int  i = 0, moved = 0, dropped = 0;
+
+    while (i < fs->num_files) {
+        strcpy(name, foldstate_name(fs, &fs->files[i]));
+        if (!utf8_valid(name)) {
+            foldstate_forget(fs, name);            /* swap-removes slot i */
+            dropped++;
+            continue;
+        }
+        if (!fs->files[i].deleted)
+            moved += folder_relocate_utf8(cf->path, name);
+        i++;
+    }
+    if (moved || dropped)
+        log_printf(LOG_INFO, "daemon: '%s': %d name(s) moved to Latin-1, %d "
+                   "non-UTF-8 record(s) left for the scan to re-add",
+                   fs->folder_id, moved, dropped);
 }
 
 /* ---- clock-offset migration --------------------------------------------
@@ -880,6 +906,7 @@ int daemon_run(Config *cfg)
         for (i = 0; i < cfg->num_folders; i++) {
             folders[i].index_id = make_index_id(sid, i);
             load_folder_index(cfg, &folders[i]);   /* before any worker runs */
+            migrate_names(&cfg->folders[i], &folders[i]);
         }
 
         /* Indexes are in; reconcile them if the clock offset has moved since

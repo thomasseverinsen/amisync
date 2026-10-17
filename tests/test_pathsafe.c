@@ -57,6 +57,27 @@ static void expect_text(const char *s, int want)
     }
 }
 
+/* Name charset mapping: 'local' is what lands on disk for wire name 'utf8',
+ * and reading 'local' back must give 'utf8' again. */
+static void expect_map(const char *utf8, const char *local)
+{
+    char a[256], b[256];
+    int  ok = name_to_local(a, sizeof a, utf8) && strcmp(a, local) == 0 &&
+              name_from_local(b, sizeof b, local) && strcmp(b, utf8) == 0 &&
+              utf8_valid(b);
+    printf("%s map %s\n", ok ? "ok  " : "FAIL", local);
+    if (!ok)
+        failures++;
+}
+
+static void expect_utf8(const char *s, int want)
+{
+    int got = utf8_valid(s);
+    printf("%s utf8_valid -> %d\n", got == want ? "ok  " : "FAIL", got);
+    if (got != want)
+        failures++;
+}
+
 int main(void)
 {
     /* --- accepted: ordinary relative names --------------------------- */
@@ -137,6 +158,41 @@ int main(void)
     /* rejected: the quote the folder writer wraps whitespace values in */
     expect_text("say \"hi\"",           0);
     expect_text("\"",                   0);
+
+    /* --- name charset mapping ---------------------------------------- */
+    expect_map("plain/name.txt",           "plain/name.txt");
+    expect_map("Avi\xC3\xB3n.mp4",          "Avi\xF3n.mp4");        /* Avión */
+    expect_map("Caf\xC3\xA9/D\xC3\xA9j\xC3\xA0", "Caf\xE9/D\xE9j\xE0");
+    expect_map("\xC3\xBF\xC2\xA0",           "\xFF\xA0");           /* top of Latin-1 */
+    /* beyond Latin-1: that component stays raw UTF-8, its neighbours map */
+    expect_map("\xE6\x97\xA5/Avi\xC3\xB3n",   "\xE6\x97\xA5/Avi\xF3n");
+    expect_map("x\xE2\x82\xAC\xC3\xA9",       "x\xE2\x82\xAC\xC3\xA9");   /* "x€é" */
+    /* a Latin-1 name that happens to look like UTF-8 survives the trip */
+    expect_map("\xC3\x83\xC2\xB3",           "\xC3\xB3");
+
+    {   /* invalid UTF-8 (overlong '/') is left alone, never decoded */
+        char o[16];
+        int  ok = name_to_local(o, sizeof o, "a\xC0\xAF") &&
+                  strcmp(o, "a\xC0\xAF") == 0;
+        printf("%s overlong kept raw\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+        ok = !name_from_local(o, 4, "\xE9\xE9");          /* needs 5 bytes */
+        printf("%s from_local cap\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+        strcpy(o, "Avi\xC3\xB3n");                         /* in place */
+        ok = name_to_local(o, sizeof o, o) && strcmp(o, "Avi\xF3n") == 0;
+        printf("%s to_local in place\n", ok ? "ok  " : "FAIL");
+        if (!ok) failures++;
+    }
+
+    expect_utf8("ascii",                1);
+    expect_utf8("Caf\xC3\xA9",          1);
+    expect_utf8("Caf\xE9",              0);   /* Latin-1 */
+    expect_utf8("\xC0\xAF",             0);   /* overlong */
+    expect_utf8("\xED\xA0\x80",         0);   /* surrogate */
+    expect_utf8("\xF4\x90\x80\x80",     0);   /* past U+10FFFF */
+    expect_utf8("\xF0\x9F\x98\x80",     1);   /* emoji */
+    expect_utf8("\xC3",                 0);   /* truncated */
 
     if (failures) {
         printf("\n%d pathsafe check(s) FAILED\n", failures);

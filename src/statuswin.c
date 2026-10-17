@@ -78,6 +78,7 @@
 #include "scanner.h"
 #include "listener.h"
 #include "log.h"
+#include "pathsafe.h"
 
 extern struct IntuitionBase *IntuitionBase;   /* owned by appicon.c */
 extern struct Library       *IconBase;        /* owned by appicon.c */
@@ -449,6 +450,7 @@ static void build_folder_items(StatusWin *sw, const ArexxContext *ctx)
             cverb = fs->chg_verb;
             memcpy(cname, fs->chg_name, sizeof(cname));
             foldstate_unlock(fs);
+            name_to_local(cname, sizeof(cname), cname);   /* for display */
         }
 
         /* The folder's live state, Syncthing-style: fetch backlog across

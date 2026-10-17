@@ -176,6 +176,14 @@ static int join_full(char *full, int cap, const char *root, const char *name)
     return AddPart((STRPTR)full, (STRPTR)name, cap) ? 1 : 0;
 }
 
+/* A sync name (UTF-8, as on the wire) in its on-disk charset - see
+ * name_to_local. Every public entry point taking a name maps it here first;
+ * everything below them works on disk names. */
+static int to_local(char out[BEP_PATH_MAX], const char *name)
+{
+    return name_to_local(out, BEP_PATH_MAX, name);
+}
+
 /* Make sure the directory at 'abs' exists, creating it if not. Both Lock and
  * CreateDir hand back a lock to release. Returns 1 if the directory is there
  * afterwards - including when someone else created it between our two calls,
@@ -404,18 +412,21 @@ int folder_hash(const char *path, const char *name, int64_t size,
                 int64_t *bytes_read)
 {
     char           full[FULL_MAX];
+    char           lname[BEP_PATH_MAX];
     unsigned char *buf;
     int32_t        bs = folder_block_size(size);
     int            rc;
 
     if (bs > FOLDER_MAX_BLOCK_SIZE)
         return -1;                             /* too big: needs bigger blocks */
+    if (!to_local(lname, name))
+        return -1;
 
     buf = AllocVec(FOLDER_HASH_CHUNK, MEMF_ANY);
     if (!buf)
         return 0;
 
-    if (!join_full(full, sizeof(full), path, name)) {
+    if (!join_full(full, sizeof(full), path, lname)) {
         FreeVec(buf);
         return -1;
     }
@@ -493,12 +504,14 @@ static void walk(WalkCtx *c, const char *abspath, const char *relprefix, int dep
         while (!c->stopped && ExNext(lock, fib)) {
             const char *name = fib->fib_FileName;
             int         isdir = fib->fib_DirEntryType >= 0;
+            char        uname[BEP_PATH_MAX];
             FolderEntry e;
 
             if (skippable(name, depth))
                 continue;
 
-            if (!join_rel(e.name, relprefix, name)) {
+            if (!name_from_local(uname, sizeof uname, name) ||
+                !join_rel(e.name, relprefix, uname)) {
                 /* Too long to name on the wire, and it takes any subtree with
                  * it: the recursion below never runs. */
                 note_example(&c->longp, c->longp1, sizeof c->longp1,
@@ -592,7 +605,8 @@ int folder_walk(const char *path, const IgnoreSet *ig, FolderWalkFn cb,
 
 int folder_mkdir(const char *path, const char *name)
 {
-    return ensure_path_dirs(path, name, 1);
+    char lname[BEP_PATH_MAX];
+    return to_local(lname, name) && ensure_path_dirs(path, lname, 1);
 }
 
 /* One-shot latch for warnings about conditions that persist across scan
@@ -707,16 +721,16 @@ int folder_load_ignores(const char *path, IgnoreSet *set)
 
 int folder_path_addressable(const char *path, const char *name)
 {
-    char full[FULL_MAX];
-    return join_full(full, sizeof(full), path, name);
+    char full[FULL_MAX], lname[BEP_PATH_MAX];
+    return to_local(lname, name) && join_full(full, sizeof(full), path, lname);
 }
 
 int folder_delete(const char *path, const char *name)
 {
-    char full[FULL_MAX];
+    char full[FULL_MAX], lname[BEP_PATH_MAX];
     BPTR lk;
 
-    if (!join_full(full, sizeof(full), path, name))
+    if (!to_local(lname, name) || !join_full(full, sizeof(full), path, lname))
         return 0;
     if (DeleteFile((STRPTR)full))
         return 1;
@@ -751,12 +765,16 @@ void folder_archive(const char *path, const char *name, int always)
 {
     static const char VDIR[] = ".stversions/";
     char                  src[FULL_MAX], dst[FULL_MAX], rel[FULL_MAX];
+    char                  lname[BEP_PATH_MAX];
     struct FileInfoBlock *fib;
     BPTR                  lk;
     int                   is_file = 0;
 
     if (!g_versioning && !always)
         return;
+    if (!to_local(lname, name))
+        return;
+    name = lname;
     if (!join_full(src, sizeof(src), path, name))
         return;
 
@@ -790,9 +808,10 @@ void folder_archive(const char *path, const char *name, int always)
 
 int folder_rename(const char *path, const char *from, const char *to)
 {
-    char a[FULL_MAX], b[FULL_MAX];
-    if (!join_full(a, sizeof(a), path, from) ||
-        !join_full(b, sizeof(b), path, to))
+    char a[FULL_MAX], b[FULL_MAX], lfrom[BEP_PATH_MAX], lto[BEP_PATH_MAX];
+    if (!to_local(lfrom, from) || !to_local(lto, to) ||
+        !join_full(a, sizeof(a), path, lfrom) ||
+        !join_full(b, sizeof(b), path, lto))
         return 0;
     return Rename((STRPTR)a, (STRPTR)b) ? 1 : 0;
 }
@@ -868,8 +887,9 @@ static int aside_path(char *out, int cap, const char *path, const char *name)
 
 void folder_delete_temp(const char *path, const char *name)
 {
-    char full[FULL_MAX];
-    if (!temp_path(full, sizeof(full), path, name))   /* matches recv_open */
+    char full[FULL_MAX], lname[BEP_PATH_MAX];
+    if (!to_local(lname, name) ||
+        !temp_path(full, sizeof(full), path, lname))   /* matches recv_open */
         return;
     DeleteFile((STRPTR)full);              /* best-effort: absent is fine */
 }
@@ -939,11 +959,11 @@ uint64_t folder_version_stamp(int64_t modified_s)
 int folder_read_block(const char *path, const char *name,
                       int64_t offset, int32_t size, unsigned char *buf)
 {
-    char full[FULL_MAX];
+    char full[FULL_MAX], lname[BEP_PATH_MAX];
     BPTR fh;
     int  got;
 
-    if (!join_full(full, sizeof(full), path, name))
+    if (!to_local(lname, name) || !join_full(full, sizeof(full), path, lname))
         return -1;
 
     fh = Open((STRPTR)full, MODE_OLDFILE);
@@ -974,12 +994,15 @@ int folder_name_safe(const char *name)
 int folder_name_fits(const char *path, const char *name)
 {
     char                  full[FULL_MAX], probe[FULL_MAX], dead[FULL_MAX];
-    char                  pname[BEP_PATH_MAX];
+    char                  pname[BEP_PATH_MAX], lname[BEP_PATH_MAX];
     const char           *base, *p;
     BPTR                  fh, lock;
     struct FileInfoBlock *fib;
     int                   fits = 1, blen;
 
+    if (!to_local(lname, name))
+        return 0;
+    name = lname;                              /* lengths count disk bytes */
     base = name;                               /* last component of 'name' */
     for (p = name; *p; p++)
         if (*p == '/' || *p == ':')
@@ -1062,10 +1085,14 @@ FolderFile folder_recv_open(const char *path, const char *name,
                             char *tmp, int tmpcap, int32_t block_size,
                             int num_blocks, int *resume_from)
 {
+    char lname[BEP_PATH_MAX];
     BPTR fh;
     long existing;
 
     *resume_from = 0;
+    if (!to_local(lname, name))
+        return 0;
+    name = lname;
 
     /* Ensure the folder root and any parent directories of 'name' exist. */
     if (!ensure_dir_exists(path))
@@ -1178,7 +1205,7 @@ FolderRecvResult folder_recv_finish(const char *path, const char *name,
                                     const unsigned char (*block_hashes)[BEP_HASH_LEN],
                                     int num_blocks, FolderRecvInfo *info)
 {
-    char             full[FULL_MAX];
+    char             full[FULL_MAX], lname[BEP_PATH_MAX];
     struct DateStamp ds;
     unsigned char   *buf;
     unsigned char    got_hash[BEP_HASH_LEN];
@@ -1284,7 +1311,7 @@ FolderRecvResult folder_recv_finish(const char *path, const char *name,
         FreeVec(buf);
     }
 
-    if (!join_full(full, sizeof(full), path, name)) {
+    if (!to_local(lname, name) || !join_full(full, sizeof(full), path, lname)) {
         if (info) info->io_reason = FOLDER_IO_PATH;
         DeleteFile((STRPTR)tmp);          /* don't strand the staged temp */
         return FOLDER_RECV_IO;
@@ -1296,7 +1323,7 @@ FolderRecvResult folder_recv_finish(const char *path, const char *name,
      * HERE rather than earlier: folder_archive MOVES the file, so archiving
      * before the transfer is verified would delete the user's copy on a fetch
      * that then failed. */
-    folder_archive(path, name, archive_always);
+    folder_archive(path, name, archive_always);       /* takes the sync name */
 
     /* Swap the staged file in without a moment where neither copy exists.
      * Rename cannot replace an existing file, so the target has to go first -
@@ -1319,7 +1346,7 @@ FolderRecvResult folder_recv_finish(const char *path, const char *name,
              * read-only file (no owner-write -> FIBF_DELETE) refuses both the
              * park below and the plain delete after it. */
             SetProtection((STRPTR)full, 0);
-            if (aside_path(aside, sizeof(aside), path, name)) {
+            if (aside_path(aside, sizeof(aside), path, lname)) {
                 DeleteFile((STRPTR)aside);          /* a crash left one behind */
                 parked = Rename((STRPTR)full, (STRPTR)aside) ? 1 : 0;
             }
@@ -1348,10 +1375,10 @@ FolderRecvResult folder_recv_finish(const char *path, const char *name,
 int folder_touch(const char *path, const char *name, int64_t modified_s,
                  uint32_t perms)
 {
-    char             full[FULL_MAX];
+    char             full[FULL_MAX], lname[BEP_PATH_MAX];
     struct DateStamp ds;
 
-    if (!join_full(full, sizeof(full), path, name))
+    if (!to_local(lname, name) || !join_full(full, sizeof(full), path, lname))
         return 0;
     if (perms != 0)
         SetProtection((STRPTR)full, unix_mode_to_protection(perms));
@@ -1415,12 +1442,52 @@ int folder_ensure_dir(const char *path)
     return ensure_dir_exists(path);
 }
 
+int folder_relocate_utf8(const char *path, const char *name)
+{
+    char        lname[BEP_PATH_MAX], rel[BEP_PATH_MAX];
+    char        from[FULL_MAX], to[FULL_MAX];
+    const char *u = name, *l = lname;
+    int         moved = 0;
+
+    if (!to_local(lname, name) || strcmp(lname, name) == 0)
+        return 0;
+    for (;;) {
+        const char *ue = strchr(u, '/'), *le = strchr(l, '/');
+        int         ul = ue ? (int)(ue - u) : (int)strlen(u);
+        int         ll = le ? (int)(le - l) : (int)strlen(l);
+        int         pre = (int)(l - lname);        /* parents, already moved */
+
+        if (ul != ll || memcmp(u, l, (size_t)ul) != 0) {
+            BPTR lk;
+
+            memcpy(rel, lname, (size_t)pre);       /* pre + ul < BEP_PATH_MAX */
+            memcpy(rel + pre, u, (size_t)ul);
+            rel[pre + ul] = '\0';
+            if (!join_full(from, sizeof(from), path, rel))
+                break;
+            memcpy(rel + pre, l, (size_t)ll);
+            rel[pre + ll] = '\0';
+            if (!join_full(to, sizeof(to), path, rel))
+                break;
+            if ((lk = Lock((STRPTR)to, ACCESS_READ)) != 0)
+                UnLock(lk);                        /* already moved */
+            else if (Rename((STRPTR)from, (STRPTR)to))
+                moved++;
+        }
+        if (!ue || !le)
+            break;
+        u = ue + 1;
+        l = le + 1;
+    }
+    return moved;
+}
+
 int folder_exists(const char *path, const char *name)
 {
-    char full[FULL_MAX];
+    char full[FULL_MAX], lname[BEP_PATH_MAX];
     BPTR lock;
 
-    if (!join_full(full, sizeof(full), path, name))
+    if (!to_local(lname, name) || !join_full(full, sizeof(full), path, lname))
         return 1;                          /* cannot ask: assume it is there */
 
     /* A SHARED lock succeeds on anything that exists however many readers it

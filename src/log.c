@@ -12,6 +12,7 @@
 #include <proto/exec.h>
 
 #include "log.h"
+#include "pathsafe.h"
 
 /* The log is written through dos.library, NOT stdio. Two reasons: MODE_READWRITE
  * takes a SHARED lock, so the log stays readable (Type, MultiView, copying it
@@ -192,6 +193,7 @@ void log_printf(LogLevel level, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(line + n, sizeof line - n, fmt, ap);
     va_end(ap);
+    name_to_local(line + n, sizeof line - n, line + n);   /* UTF-8 names */
 
     ObtainSemaphore(&g_loglock);
 

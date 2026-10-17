@@ -31,6 +31,7 @@
 #include "syncmodel.h"     /* sync_bump_version */
 #include "folder.h"
 #include "ignore.h"
+#include "pathsafe.h"      /* name_to_local */
 #include "ssl.h"
 #include "worker.h"        /* WORKER_SIG_STOP, WORKER_SIG_RESCAN */
 #include "wreg.h"
@@ -584,10 +585,10 @@ static int scan_entry(void *vctx, const FolderEntry *e)
 
     if (e->is_dir) {
         commit_dir(fs, e);                 /* also marks the record seen */
-        if (c->sc->ndirs < NOTIFY_MAX_WATCH) {
-            scopy(c->sc->dirs[c->sc->ndirs], e->name, sizeof(c->sc->dirs[0]));
+        if (c->sc->ndirs < NOTIFY_MAX_WATCH &&   /* watched by disk name */
+            name_to_local(c->sc->dirs[c->sc->ndirs], sizeof(c->sc->dirs[0]),
+                          e->name))
             c->sc->ndirs++;
-        }
         return 1;
     }
 

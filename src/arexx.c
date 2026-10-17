@@ -32,6 +32,7 @@
 #include "scanner.h"
 #include "version.h"
 #include "log.h"
+#include "pathsafe.h"
 
 #define AREXX_NAME_MAX 32
 
@@ -308,6 +309,7 @@ static void build_status(const ArexxContext *ctx, char *buf, int cap)
             cverb = fs->chg_verb;
             memcpy(cname, fs->chg_name, sizeof(cname));
             foldstate_unlock(fs);
+            name_to_local(cname, sizeof(cname), cname);   /* for display */
             arexx_fmt_size(bytes, sz1);
             if (sday || smin) {
                 arexx_fmt_dur(arexx_mins_since(sday, smin), dur);
