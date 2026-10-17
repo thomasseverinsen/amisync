@@ -11,7 +11,10 @@
  *
  * Workbench has no "relabel AppIcon" call, so a changed status re-adds the
  * icon (RemoveAppIcon + AddAppIcon); that only happens when the text actually
- * changed. Double-clicking the icon opens the live status window (statuswin.c;
+ * changed. On V44+ Workbench writes the icon's position back into our
+ * DiskObject (WBAPPICONA_PropagatePosition), so the re-add lands where the
+ * user put it, and Snapshot saves it to APPICON_POS_FILE for the next start.
+ * Double-clicking the icon opens the live status window (statuswin.c;
  * single-instance and non-blocking), with the old modal EasyRequest kept only
  * as the fallback when the window cannot open.
  *
@@ -34,6 +37,7 @@
  * confirmation first - it stops the whole daemon.
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include <exec/memory.h>
@@ -64,6 +68,10 @@ static const char *appicon_paths[] = {
     "ENVARC:Amisync/appicon",
     NULL
 };
+
+/* The snapshotted backdrop position, "x y". Not the icon file's own: that
+ * one places the program's icon in its drawer. */
+#define APPICON_POS_FILE "ENVARC:Amisync/appicon.pos"
 
 /* Tools-menu commands. IDs are am_ID values in the AppMessages; 0 is the
  * AppIcon (and the sub-menu parent, which never fires itself). On V45+ the
@@ -132,6 +140,42 @@ static int open_intuition(void)
     return IntuitionBase != NULL;
 }
 
+static void pos_load(struct DiskObject *dobj)
+{
+    char buf[32];
+    long x, y;
+    LONG n;
+    BPTR fh = Open((STRPTR)APPICON_POS_FILE, MODE_OLDFILE);
+
+    if (!fh)
+        return;
+    n = Read(fh, buf, sizeof(buf) - 1);
+    Close(fh);
+    if (n <= 0)
+        return;
+    buf[n] = '\0';
+    if (sscanf(buf, "%ld %ld", &x, &y) == 2) {
+        dobj->do_CurrentX = x;
+        dobj->do_CurrentY = y;
+    }
+}
+
+static void pos_save(const struct DiskObject *dobj)
+{
+    char buf[32];
+    BPTR fh;
+    LONG n;
+
+    n  = sprintf(buf, "%ld %ld\n", (long)dobj->do_CurrentX,
+                 (long)dobj->do_CurrentY);
+    fh = Open((STRPTR)APPICON_POS_FILE, MODE_NEWFILE);
+    if (!fh || Write(fh, buf, n) != n)
+        log_printf(LOG_WARN, "appicon: could not save the snapshot to %s",
+                   APPICON_POS_FILE);
+    if (fh)
+        Close(fh);
+}
+
 /* Load the icon imagery: the first present icon file, else the system's
  * default tool icon. Returns NULL only without icon.library (or if even the
  * default icon can't load), which disables the AppIcon feature. */
@@ -160,9 +204,9 @@ static struct DiskObject *load_icon(void)
                        "appicon: no icon file; using default tool icon");
     }
     if (dobj) {
-        /* a saved snapshot position would pin the AppIcon; let WB place it */
-        dobj->do_CurrentX = NO_ICON_POSITION;
+        dobj->do_CurrentX = NO_ICON_POSITION;     /* WB places it, unless... */
         dobj->do_CurrentY = NO_ICON_POSITION;
+        pos_load(dobj);                           /* ...it was snapshotted */
     }
     return dobj;
 }
@@ -209,7 +253,17 @@ static void appicon_try_add(AppIconUI *ui)
         return;
 
     if (!ui->icon) {
-        ui->icon = AddAppIconA(0, 0, ui->label, ui->port, 0, ui->dobj, NULL);
+        struct TagItem itags[4];
+
+        itags[0].ti_Tag  = WBAPPICONA_PropagatePosition;
+        itags[0].ti_Data = TRUE;
+        itags[1].ti_Tag  = WBAPPICONA_SupportsSnapshot;
+        itags[1].ti_Data = TRUE;
+        itags[2].ti_Tag  = WBAPPICONA_SupportsUnSnapshot;
+        itags[2].ti_Data = TRUE;
+        itags[3].ti_Tag  = TAG_DONE;
+        ui->icon = AddAppIconA(0, 0, ui->label, ui->port, 0, ui->dobj,
+                               WorkbenchBase->lib_Version >= 44 ? itags : NULL);
         if (ui->icon)
             ui->relabelled = now_seconds();
         if (ui->icon && !ui->announced) {
@@ -324,7 +378,13 @@ int appicon_handle(AppIconUI *ui, const ArexxContext *ctx, StatusWin *sw)
     /* Reply everything BEFORE any action or modal requester: Workbench waits
      * for the reply, and must not sit blocked while a requester is up. */
     while ((am = (struct AppMessage *)GetMsg(ui->port)) != NULL) {
-        if (am->am_Type == AMTYPE_APPICON && am->am_NumArgs == 0) {
+        if (am->am_Type == AMTYPE_APPICON &&
+            am->am_Class == AMCLASSICON_Snapshot) {
+            pos_save(ui->dobj);
+        } else if (am->am_Type == AMTYPE_APPICON &&
+                   am->am_Class == AMCLASSICON_UnSnapshot) {
+            DeleteFile((STRPTR)APPICON_POS_FILE);
+        } else if (am->am_Type == AMTYPE_APPICON && am->am_NumArgs == 0) {
             status = 1;                    /* double-click (not a drop) */
         } else if (am->am_Type == AMTYPE_APPMENUITEM) {
             switch (am->am_ID) {
