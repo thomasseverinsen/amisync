@@ -14,6 +14,9 @@
  * changed. On V44+ Workbench writes the icon's position back into our
  * DiskObject (WBAPPICONA_PropagatePosition), so the re-add lands where the
  * user put it, and Snapshot saves it to APPICON_POS_FILE for the next start.
+ * Directory Opus Magellan ignores those tags and keys its own snapshots by
+ * label text, so each status had its own position; DAE_SnapShot has it hand
+ * the Snapshot to us instead.
  * Double-clicking the icon opens the live status window (statuswin.c;
  * single-instance and non-blocking), with the old modal EasyRequest kept only
  * as the fallback when the window cannot open.
@@ -72,6 +75,21 @@ static const char *appicon_paths[] = {
 /* The snapshotted backdrop position, "x y". Not the icon file's own: that
  * one places the program's icon in its drawer. */
 #define APPICON_POS_FILE "ENVARC:Amisync/appicon.pos"
+
+/* Magellan's AppIcon snapshot protocol, from its dopus5.h. The position uses
+ * the same origin as do_CurrentX/Y. */
+#define DAE_SnapShot         (TAG_USER + 1)
+#define MTYPE_APPSNAPSHOT    0x3812
+#define APPSNAPF_UNSNAPSHOT  (1 << 0)
+
+struct AppSnapshotMsg {
+    struct AppMessage ap_msg;
+    long              position_x;
+    long              position_y;
+    struct IBox       window_pos;
+    unsigned long     flags;
+    long              id;
+};
 
 /* Tools-menu commands. IDs are am_ID values in the AppMessages; 0 is the
  * AppIcon (and the sub-menu parent, which never fires itself). On V45+ the
@@ -160,14 +178,13 @@ static void pos_load(struct DiskObject *dobj)
     }
 }
 
-static void pos_save(const struct DiskObject *dobj)
+static void pos_save(long x, long y)
 {
     char buf[32];
     BPTR fh;
     LONG n;
 
-    n  = sprintf(buf, "%ld %ld\n", (long)dobj->do_CurrentX,
-                 (long)dobj->do_CurrentY);
+    n  = sprintf(buf, "%ld %ld\n", x, y);
     fh = Open((STRPTR)APPICON_POS_FILE, MODE_NEWFILE);
     if (!fh || Write(fh, buf, n) != n)
         log_printf(LOG_WARN, "appicon: could not save the snapshot to %s",
@@ -253,7 +270,7 @@ static void appicon_try_add(AppIconUI *ui)
         return;
 
     if (!ui->icon) {
-        struct TagItem itags[4];
+        struct TagItem itags[5];
 
         itags[0].ti_Tag  = WBAPPICONA_PropagatePosition;
         itags[0].ti_Data = TRUE;
@@ -261,7 +278,9 @@ static void appicon_try_add(AppIconUI *ui)
         itags[1].ti_Data = TRUE;
         itags[2].ti_Tag  = WBAPPICONA_SupportsUnSnapshot;
         itags[2].ti_Data = TRUE;
-        itags[3].ti_Tag  = TAG_DONE;
+        itags[3].ti_Tag  = DAE_SnapShot;
+        itags[3].ti_Data = TRUE;
+        itags[4].ti_Tag  = TAG_DONE;
         ui->icon = AddAppIconA(0, 0, ui->label, ui->port, 0, ui->dobj,
                                WorkbenchBase->lib_Version >= 44 ? itags : NULL);
         if (ui->icon)
@@ -378,9 +397,21 @@ int appicon_handle(AppIconUI *ui, const ArexxContext *ctx, StatusWin *sw)
     /* Reply everything BEFORE any action or modal requester: Workbench waits
      * for the reply, and must not sit blocked while a requester is up. */
     while ((am = (struct AppMessage *)GetMsg(ui->port)) != NULL) {
-        if (am->am_Type == AMTYPE_APPICON &&
-            am->am_Class == AMCLASSICON_Snapshot) {
-            pos_save(ui->dobj);
+        if (am->am_Type == MTYPE_APPSNAPSHOT) {
+            struct AppSnapshotMsg *sm = (struct AppSnapshotMsg *)am;
+
+            if (sm->flags & APPSNAPF_UNSNAPSHOT) {
+                DeleteFile((STRPTR)APPICON_POS_FILE);
+                ui->dobj->do_CurrentX = NO_ICON_POSITION;
+                ui->dobj->do_CurrentY = NO_ICON_POSITION;
+            } else {
+                pos_save(sm->position_x, sm->position_y);
+                ui->dobj->do_CurrentX = sm->position_x;   /* for re-adds */
+                ui->dobj->do_CurrentY = sm->position_y;
+            }
+        } else if (am->am_Type == AMTYPE_APPICON &&
+                   am->am_Class == AMCLASSICON_Snapshot) {
+            pos_save(ui->dobj->do_CurrentX, ui->dobj->do_CurrentY);
         } else if (am->am_Type == AMTYPE_APPICON &&
                    am->am_Class == AMCLASSICON_UnSnapshot) {
             DeleteFile((STRPTR)APPICON_POS_FILE);
