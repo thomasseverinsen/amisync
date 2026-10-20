@@ -16,7 +16,8 @@
  * user put it, and Snapshot saves it to APPICON_POS_FILE for the next start.
  * Directory Opus Magellan ignores those tags and keys its own snapshots by
  * label text, so each status had its own position; DAE_SnapShot has it hand
- * the Snapshot to us instead.
+ * the Snapshot to us instead, and its ChangeAppIcon relabels in place, so a
+ * dragged icon stays put there too.
  * Double-clicking the icon opens the live status window (statuswin.c;
  * single-instance and non-blocking), with the old modal EasyRequest kept only
  * as the fallback when the window cannot open.
@@ -43,6 +44,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <exec/execbase.h>
 #include <exec/memory.h>
 #include <intuition/intuition.h>
 #include <workbench/workbench.h>
@@ -81,6 +83,24 @@ static const char *appicon_paths[] = {
 #define DAE_SnapShot         (TAG_USER + 1)
 #define MTYPE_APPSNAPSHOT    0x3812
 #define APPSNAPF_UNSNAPSHOT  (1 << 0)
+
+/* dopus5.library calls, LVOs from its dopus_lib.fd. */
+#define APP_ICON    0
+#define CAIF_TITLE  (1 << 2)
+
+static struct Library *DOpusBase;
+
+#define LockAppList() \
+      LP0(0x450, APTR, LockAppList, , DOpusBase)
+#define NextAppEntry(last, type) \
+      LP2(0x456, APTR, NextAppEntry, APTR, last, a0, ULONG, type, d0, \
+      , DOpusBase)
+#define UnlockAppList() \
+      LP0NR(0x45c, UnlockAppList, , DOpusBase)
+#define ChangeAppIcon(icon, render, select, title, flags) \
+      LP5NR(0x684, ChangeAppIcon, APTR, icon, a0, struct Image *, render, a1, \
+      struct Image *, select, a2, char *, title, a3, ULONG, flags, d0, \
+      , DOpusBase)
 
 struct AppSnapshotMsg {
     struct AppMessage ap_msg;
@@ -124,8 +144,10 @@ struct AppIconUI {
     struct AppMenuItem *menu[MENU_ITEMS];   /* Tools-menu items, NULL-able */
     struct DiskObject  *dobj;      /* from icon file or GetDefDiskObject   */
     int                 announced; /* logged the successful placement once */
-    char                label[64]; /* must outlive the icon (WB reads it)  */
-    long                relabelled; /* when the icon was last re-added     */
+    char                label[2][64]; /* [cur] is placed and read by WB;
+                                       * a Magellan relabel takes the other */
+    int                 cur;
+    long                relabelled; /* when the label last changed         */
 };
 
 /* A relabel is a remove + add. The count in "Syncing (N files)" changes
@@ -146,6 +168,28 @@ static int state_len(const char *s)
 {
     const char *p = strchr(s, '(');
     return p ? (int)(p - s) : (int)strlen(s);
+}
+
+/* Whether Magellan placed this icon: its AddAppIconA patch returns one of its
+ * own entries. Only uses dopus5.library if it is already in memory. */
+static int magellan_icon(struct AppIcon *icon)
+{
+    APTR e;
+
+    if (!DOpusBase) {
+        Forbid();
+        e = FindName(&SysBase->LibList, (STRPTR)"dopus5.library");
+        Permit();
+        if (e)
+            DOpusBase = OpenLibrary("dopus5.library", 0);
+        if (!DOpusBase)
+            return 0;
+    }
+    for (e = LockAppList(); e && (e = NextAppEntry(e, APP_ICON)) != NULL; )
+        if (e == (APTR)icon)
+            break;
+    UnlockAppList();
+    return e != NULL;
 }
 
 /* Lazy-open intuition.library for the two fallback requesters. Returns 0 if
@@ -245,7 +289,7 @@ AppIconUI *appicon_create(int enabled)
         appicon_destroy(ui);
         return NULL;
     }
-    strcpy(ui->label, AMISYNC_NAME);
+    strcpy(ui->label[0], AMISYNC_NAME);
     return ui;
 }
 
@@ -281,7 +325,7 @@ static void appicon_try_add(AppIconUI *ui)
         itags[3].ti_Tag  = DAE_SnapShot;
         itags[3].ti_Data = TRUE;
         itags[4].ti_Tag  = TAG_DONE;
-        ui->icon = AddAppIconA(0, 0, ui->label, ui->port, 0, ui->dobj,
+        ui->icon = AddAppIconA(0, 0, ui->label[ui->cur], ui->port, 0, ui->dobj,
                                WorkbenchBase->lib_Version >= 44 ? itags : NULL);
         if (ui->icon)
             ui->relabelled = now_seconds();
@@ -319,17 +363,32 @@ static void appicon_try_add(AppIconUI *ui)
 
 void appicon_update(AppIconUI *ui, const char *status)
 {
+    char *label;
+
     if (!ui || !status || !status[0])
         return;
+    label = ui->label[ui->cur];
 
-    if (ui->icon && strcmp(ui->label, status) != 0) {
-        int a = state_len(ui->label), b = state_len(status);
+    if (ui->icon && strcmp(label, status) != 0) {
+        int a = state_len(label), b = state_len(status);
 
-        if (a == b && strncmp(ui->label, status, a) == 0 &&
+        if (a == b && strncmp(label, status, a) == 0 &&
             now_seconds() - ui->relabelled < APPICON_RELABEL_SECS)
             return;                        /* count-only change: not yet    */
         log_printf(LOG_DEBUG, "appicon: relabel \"%s\" -> \"%s\"",
-                   ui->label, status);
+                   label, status);
+        if (magellan_icon(ui->icon)) {
+            /* Magellan reads the title later from its own process, so the
+             * old buffer must stay intact until it has. */
+            ui->cur ^= 1;
+            label = ui->label[ui->cur];
+            strncpy(label, status, sizeof(ui->label[0]) - 1);
+            label[sizeof(ui->label[0]) - 1] = '\0';
+            ChangeAppIcon(ui->icon, NULL, NULL, label, CAIF_TITLE);
+            ui->relabelled = now_seconds();
+            appicon_try_add(ui);
+            return;
+        }
         /* Honour the answer rather than assume it. The invariant below - only
          * rewrite the label while no icon holds it, because Workbench reads
          * this buffer for as long as the icon is placed - was asserted by a
@@ -343,8 +402,8 @@ void appicon_update(AppIconUI *ui, const char *status)
     /* Only rewrite the label while no icon holds it - Workbench reads this
      * buffer for as long as the icon is placed. */
     if (!ui->icon) {
-        strncpy(ui->label, status, sizeof(ui->label) - 1);
-        ui->label[sizeof(ui->label) - 1] = '\0';
+        strncpy(label, status, sizeof(ui->label[0]) - 1);
+        label[sizeof(ui->label[0]) - 1] = '\0';
     }
     /* Unconditional: try_add only fills what is missing, so a menu item that
      * failed to add under memory pressure gets retried on later ticks even
@@ -478,6 +537,10 @@ void appicon_destroy(AppIconUI *ui)
         FreeDiskObject(ui->dobj);    /* before IconBase closes below */
     FreeVec(ui);
 
+    if (DOpusBase) {
+        CloseLibrary(DOpusBase);
+        DOpusBase = NULL;
+    }
     if (IconBase) {
         CloseLibrary(IconBase);
         IconBase = NULL;
