@@ -116,10 +116,8 @@ static ULONG unix_mode_to_protection(uint32_t mode)
 }
 
 /* A DateStamp cannot represent anything before 1978, so an older mtime is
- * clamped to the Amiga epoch - silently, and the file then reports a different
- * mtime than the peer holds. Nothing can be done about the representation; it
- * is written down here because the symptom (one file that never settles) is
- * otherwise a long hunt. */
+ * clamped to the Amiga epoch, and the file then reads back a different mtime
+ * than the peer holds - folder_mtime_on_disk lets the scanner allow for it. */
 static void unix_to_ds(int64_t unix_s, struct DateStamp *ds)
 {
     int64_t a = unix_s + g_tz_east_s - AMIGA_UNIX_OFFSET;   /* UTC -> local */
@@ -946,6 +944,14 @@ int64_t folder_now(void)
 {
     struct DateStamp ds;
     DateStamp(&ds);
+    return ds_to_unix(&ds);
+}
+
+int64_t folder_mtime_on_disk(int64_t modified_s)
+{
+    struct DateStamp ds;
+
+    unix_to_ds(modified_s, &ds);
     return ds_to_unix(&ds);
 }
 

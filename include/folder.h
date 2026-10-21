@@ -271,6 +271,10 @@ void folder_recv_abort(FolderFile fh, const char *tmp);
 int  folder_touch(const char *path, const char *name, int64_t modified_s,
                   uint32_t perms);
 
+/* The mtime a file stamped with 'modified_s' reads back as: equal to it,
+ * except before 1978 (see unix_to_ds), where the disk holds the Amiga epoch. */
+int64_t folder_mtime_on_disk(int64_t modified_s);
+
 /* Index persistence (in the state directory, not a synced folder).
  * folder_state_path builds <statedir>/<hex16>.idx, where hex16 is a stable
  * 64-bit FNV-1a hash of 'folder_id' (a legal AmigaOS filename regardless of the

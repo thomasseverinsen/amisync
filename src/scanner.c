@@ -325,7 +325,12 @@ static int rec_changed(FolderState *fs, const char *name,
      * for as long as its size and mtime happened not to change. */
     if (have->invalid)
         return 1;
-    if (have->size != size || have->modified_s != modified_s)
+    /* A pre-1978 mtime cannot be stored, so compare what the disk could hold:
+     * otherwise a received file reads as edited on every scan - rehashed and
+     * re-announced, or in receive-only, fetched again forever. */
+    if (have->size != size ||
+        (have->modified_s != modified_s &&
+         folder_mtime_on_disk(have->modified_s) != modified_s))
         return 1;
     foldstate_blocks(fs, name, NULL, 0, &total);
     return total == 0;
