@@ -34,7 +34,7 @@
  * menu (AddAppMenuItem: Status/Rescan All/Pause All/Resume All/Stop) - the
  * canonical place for background-app controls. On workbench.library V45+
  * (OS 3.9/3.2) they sit in an "AmiSync" sub menu (WBAPPMENUA_GetKey/
- * UseKey); older Workbenches ignore those tags' mechanism, so there they
+ * UseKey); older Workbenches and Magellan have no sub menus, so there they
  * are added as flat "AmiSync: ..." entries instead. The items share the
  * AppIcon's message port and retry logic. Selection-scoped and
  * parameterized verbs live in the STATUS WINDOW (and ARexx). Stop asks for
@@ -86,6 +86,7 @@ static const char *appicon_paths[] = {
 
 /* dopus5.library calls, LVOs from its dopus_lib.fd. */
 #define APP_ICON    0
+#define APP_MENU    2
 #define CAIF_TITLE  (1 << 2)
 
 static struct Library *DOpusBase;
@@ -113,8 +114,8 @@ struct AppSnapshotMsg {
 
 /* Tools-menu commands. IDs are am_ID values in the AppMessages; 0 is the
  * AppIcon (and the sub-menu parent, which never fires itself). On V45+ the
- * short labels go into an "AmiSync" sub menu; pre-V45 gets the flat labels,
- * prefixed because they land directly in the shared Tools menu. */
+ * short labels go into an "AmiSync" sub menu; pre-V45 and Magellan get the
+ * flat labels, prefixed because they land directly in the shared Tools menu. */
 enum {
     MENU_STATUS = 1,
     MENU_RESCAN,
@@ -141,6 +142,7 @@ struct AppIconUI {
     struct AppIcon     *icon;      /* NULL until AddAppIcon succeeds       */
     struct AppMenuItem *parent;    /* V45+ "AmiSync" sub-menu parent item  */
     ULONG               menukey;   /* sub-menu key GetKey wrote for it     */
+    int                 flat;      /* V45+ but Magellan: no sub menu       */
     struct AppMenuItem *menu[MENU_ITEMS];   /* Tools-menu items, NULL-able */
     struct DiskObject  *dobj;      /* from icon file or GetDefDiskObject   */
     int                 announced; /* logged the successful placement once */
@@ -170,9 +172,10 @@ static int state_len(const char *s)
     return p ? (int)(p - s) : (int)strlen(s);
 }
 
-/* Whether Magellan placed this icon: its AddAppIconA patch returns one of its
- * own entries. Only uses dopus5.library if it is already in memory. */
-static int magellan_icon(struct AppIcon *icon)
+/* Whether Magellan placed this AppIcon or AppMenuItem (type APP_ICON or
+ * APP_MENU): its patches return one of its own entries. Only uses
+ * dopus5.library if it is already in memory. */
+static int magellan_owns(APTR obj, ULONG type)
 {
     APTR e;
 
@@ -185,8 +188,8 @@ static int magellan_icon(struct AppIcon *icon)
         if (!DOpusBase)
             return 0;
     }
-    for (e = LockAppList(); e && (e = NextAppEntry(e, APP_ICON)) != NULL; )
-        if (e == (APTR)icon)
+    for (e = LockAppList(); e && (e = NextAppEntry(e, type)) != NULL; )
+        if (e == obj)
             break;
     UnlockAppList();
     return e != NULL;
@@ -335,19 +338,25 @@ static void appicon_try_add(AppIconUI *ui)
         }
     }
 
-    if (WorkbenchBase->lib_Version >= 45) {
+    if (WorkbenchBase->lib_Version >= 45 && !ui->flat && !ui->parent) {
         /* One "AmiSync" entry in the Tools menu, commands as its sub menu. */
-        if (!ui->parent) {
-            struct TagItem ptags[2];
-            ptags[0].ti_Tag  = WBAPPMENUA_GetKey;
-            ptags[0].ti_Data = (ULONG)&ui->menukey;
-            ptags[1].ti_Tag  = TAG_DONE;
-            ui->parent = AddAppMenuItemA(0, 0, (STRPTR)AMISYNC_NAME,
-                                         ui->port, ptags);
+        struct TagItem ptags[2];
+        ptags[0].ti_Tag  = WBAPPMENUA_GetKey;
+        ptags[0].ti_Data = (ULONG)&ui->menukey;
+        ptags[1].ti_Tag  = TAG_DONE;
+        ui->parent = AddAppMenuItemA(0, 0, (STRPTR)AMISYNC_NAME,
+                                     ui->port, ptags);
+        /* Magellan ignores the sub-menu tags and lists every item flat. */
+        if (ui->parent && magellan_owns(ui->parent, APP_MENU)) {
+            RemoveAppMenuItem(ui->parent);
+            ui->parent = NULL;
+            ui->flat = 1;
         }
-        if (!ui->parent)
+        if (!ui->parent && !ui->flat)
             return;              /* no parent yet: retry the sub menu next
                                   * tick rather than fall back to flat ones */
+    }
+    if (ui->parent) {
         sub[0].ti_Tag  = WBAPPMENUA_UseKey;
         sub[0].ti_Data = ui->menukey;
         sub[1].ti_Tag  = TAG_DONE;
@@ -377,7 +386,7 @@ void appicon_update(AppIconUI *ui, const char *status)
             return;                        /* count-only change: not yet    */
         log_printf(LOG_DEBUG, "appicon: relabel \"%s\" -> \"%s\"",
                    label, status);
-        if (magellan_icon(ui->icon)) {
+        if (magellan_owns(ui->icon, APP_ICON)) {
             /* Magellan reads the title later from its own process, so the
              * old buffer must stay intact until it has. */
             ui->cur ^= 1;
